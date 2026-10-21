@@ -2,7 +2,7 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-This is an installable starting point. It contains no skills, agent definitions, active hooks, or MCP servers yet. Installing it does not add any capabilities until real content is added.
+This is an installable starting point. It contains no skills, agent definitions, instructions, active hooks, or MCP servers yet. Installing it does not add any capabilities until real content is added. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
 
 ## Install
 
@@ -65,6 +65,50 @@ copilot plugin install (Get-Location).Path
 
 Direct local installations are cached. Run that install command again after changes, then start a new session. CLI 1.0.101-0 rejects a bare `.` for direct installation and warns that direct installs are deprecated; prefer the marketplace workflow.
 
+### Global development mappings on Windows
+
+As an alternative to loading the plugin, directory junctions can expose the working clone as personal CLI customizations. They are explicit local setup, not something plugin installation creates. Use a stable clone, not a temporary session worktree or an installed-plugin cache.
+
+For a clone at `C:\repos\external\OskarKlintrot\skills`, use these mappings:
+
+| Global directory under `%USERPROFILE%\.copilot` | Source relative to the clone |
+| --- | --- |
+| `skills` | `skills` |
+| `agents` | `com.github.copilot\agents` |
+| `hooks` | `com.github.copilot\hooks` |
+| `instructions` | `instructions` |
+
+If `COPILOT_HOME` is set, its directory replaces `%USERPROFILE%\.copilot`. The root `instructions` directory is for this local mapping only; it is not a portable plugin component.
+
+Use this fail-fast, idempotent setup procedure:
+
+1. Pull the merged changes, or integrate the reviewed local commit, into the stable clone first. Confirm all four source directories exist. Stop on a missing source; do not create an empty substitute or map a cache directory.
+2. Inspect every destination before changing anything. An existing junction to the exact intended source is already correct: leave it unchanged. Compare resolved absolute targets, ignoring Windows path casing and trailing separators.
+3. Stop on any conflicting destination: a regular file or directory, a symbolic link, or a junction to a different or missing target. Preserve it and resolve the conflict explicitly. Never delete, overwrite, or move existing customizations automatically.
+4. After all preflight checks pass, create junctions only for missing destinations, using PowerShell `New-Item -ItemType Junction` with explicit absolute paths. Check each result and surface any error; rerunning the procedure must preserve all correct existing mappings.
+5. Leave the existing global `copilot-instructions.md` file untouched. It is a separate instruction source, not the destination of the `instructions` mapping. Preserve unrelated settings and customizations.
+
+Edits through a junction change files in the clone. Add actual content there deliberately; empty mapped directories still provide no capabilities. Global hook mappings also execute future hook definitions locally, so review any hook change before starting a new session.
+
+### Reload and duplicate sources
+
+When using global mappings, keep `oskar-tools@oskar-personal` disabled:
+
+```powershell
+copilot plugin disable oskar-tools@oskar-personal
+copilot plugin list
+```
+
+Also avoid mounting the same plugin with `--plugin-dir` or keeping an enabled direct installation alongside the mappings. Inspect `plugin list` for those separate installs. Choose one loading route for skills, agents, and hooks: plugin loading or global mappings. Do not rely on deduplication; duplicate hook sources can execute the same command more than once.
+
+Start a new CLI session after changing mappings or content; use `/restart` where supported. Inspect instruction discovery in the intended working directory:
+
+```powershell
+copilot instruction list --json
+```
+
+Check the paths and `applyTo` values, not just the presence of a filename. This lists what that CLI process discovers; it is not proof of what an already-running desktop or SDK session has loaded. An existing session can retain its previous state.
+
 ## Add content
 
 The plugin lives at the repository root. The marketplace's `source` points to that root.
@@ -73,6 +117,7 @@ The plugin lives at the repository root. The marketplace's `source` points to th
 plugin.json
 .github\plugin\marketplace.json
 skills\
+instructions\
 com.github.copilot\
   agents\
   hooks\
@@ -99,6 +144,20 @@ Hooks execute external commands. Adding one is a deliberate, separate change: cr
 There is no hook configuration or hook script in this starting point. Do not use `.github\hooks` for distributable plugin hooks: that location configures the repository itself.
 
 Agent Plugins 1.0 fixes these component locations. Do not add legacy `skills`, `agents`, or `hooks` path fields to `plugin.json`. No MCP configuration is needed unless you separately choose to add a server.
+
+### Instructions and plugin rules
+
+For the global development mapping, add real `*.instructions.md` files to `instructions`. Files without `applyTo` provide general instructions; use YAML frontmatter with an `applyTo` glob for file-scoped instructions. Keep one source file per instruction: the junction exposes the same files globally without copying them.
+
+The current [plugin reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference#components) documents Copilot-specific plugin rules in `com.github.copilot\rules`. However, that route was not functional in our isolated checks with CLI **1.0.101-0**:
+
+- An enabled installed fixture and a `--plugin-dir` fixture did not expose `*.instructions.md` through `instruction list --json`.
+- A mounted fixture containing both `*.instructions.md` and plain `*.md` rules supplied none of their markers to a prompt.
+- Mapping the same directory to an isolated personal `instructions` directory discovered both `*.instructions.md` files, preserved `applyTo: "**/*.ts"`, and ignored plain `*.md`. A prompt with no file operations received the general instruction marker, not the file-scoped one.
+
+Consequently, this repository uses `instructions` for verified local personal instructions and does not claim equivalent plugin-rule behavior. Installing the plugin alone does **not** load these files. The fixture checks did not establish full equivalence for every file-scoped matching case or other Copilot clients.
+
+Recheck support with your installed CLI before adopting plugin rules. Do not rename, copy, or relocate instructions automatically, remove `applyTo`, or enable another loading route without checking scope and duplicate behavior.
 
 ## Reference
 
