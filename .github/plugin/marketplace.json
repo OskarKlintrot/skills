@@ -1,0 +1,12 @@
+{
+  "name": "oskar-personal",
+  "owner": {
+    "name": "OskarKlintrot"
+  },
+  "plugins": [
+    {
+      "name": "oskar-tools",
+      "source": "."
+    }
+  ]
+}
