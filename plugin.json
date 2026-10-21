@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "oskar-tools",
+  "version": "0.1.0",
+  "description": "Personal Copilot plugin for skills, agents, and hooks.",
+  "author": {
+    "name": "OskarKlintrot"
+  },
+  "repository": "https://github.com/OskarKlintrot/skills"
+}
