@@ -2,7 +2,31 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-This is an installable starting point. It contains no skills, agent definitions, instructions, active hooks, or MCP servers yet. Installing it does not add any capabilities until real content is added. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+It currently ships one feature: [git conventions hooks](#git-conventions) that make agents write correct commit messages, PR titles, and branch names in every repository. It contains no skills, agent definitions, instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+
+## Git conventions
+
+The rules apply globally, whether you load the plugin at user level or use the [global development mappings](#global-development-mappings-on-windows). The hook commands resolve their scripts from `${PLUGIN_ROOT}` when loaded as a plugin, and from the user-level hooks directory otherwise. The rules text lives in `com.github.copilot\hooks\scripts\git-conventions.md`.
+
+- **Commit messages and PR titles:** `<type>(<optional scope>): <Capitalized description>`, where type is one of `feat`, `fix`, `perf`, `docs`, `style`, `refactor`, `test`, or `build`. The first line is at most 72 characters.
+- **Language and tone:** English, plain and concise (based on [`bro`](https://github.com/cursor/plugins/tree/main/pstack/skills/bro)). Messages containing `åäöæø` are rejected as a heuristic for non-English text.
+- **Branches:** `feature/<kebab-case>` or `release/<name>`.
+
+Two mechanisms enforce this:
+
+1. `sessionStart` and `subagentStart` hooks inject the rules into the agent's context.
+2. A `preToolUse` hook denies tool calls that break them. It checks:
+   - `git commit` (`-m`, `--message`, `-F`, heredocs, and PowerShell here-strings), and branch creation via `git checkout`, `git switch`, `git branch`, and `git worktree add`, in bash and PowerShell tool calls.
+   - `gh pr create`, `gh pr edit`, and `gh pr merge` (GitHub and GHE), and `az repos pr create` and `az repos pr update` (Azure DevOps).
+   - GitHub and Azure DevOps MCP tools that create or update pull requests or create branches.
+
+The hooks only affect agent tool calls, not commands you run yourself. Messages that cannot be resolved statically, such as `$variable` values, are allowed. `fixup!`, `squash!`, and `amend!` commits are skipped. The scripts require PowerShell 7 (`pwsh`) on `PATH`. If the validator fails internally, it allows the call.
+
+Run the tests with:
+
+```powershell
+pwsh -NoProfile -File tests\git-conventions-hooks.tests.ps1
+```
 
 ## Install
 
@@ -121,9 +145,12 @@ instructions\
 com.github.copilot\
   agents\
   hooks\
+    hooks.json
+    scripts\
+tests\
 ```
 
-The empty component directories are tracked with `.gitkeep` files. Keep repository content and instructions in English.
+Empty component directories are tracked with `.gitkeep` files. Keep repository content and instructions in English.
 
 ### Skills
 
@@ -139,9 +166,9 @@ See [creating custom agents](https://docs.github.com/en/copilot/how-tos/copilot-
 
 ### Hooks
 
-Hooks execute external commands. Adding one is a deliberate, separate change: create `com.github.copilot\hooks\hooks.json` using the version `1` format in the [hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference).
+Hooks execute external commands. They are configured in `com.github.copilot\hooks\hooks.json` using the version `1` format in the [hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference). Put scripts in `com.github.copilot\hooks\scripts\`. Plugin hooks expand `${PLUGIN_ROOT}`, but user-level hooks leave it as literal text, so hook commands must also work through the global `hooks` mapping. Follow the fallback in the existing `hooks.json`. Because `preToolUse` command hooks deny the call when they fail, a wrong script path blocks every tool call.
 
-There is no hook configuration or hook script in this starting point. Do not use `.github\hooks` for distributable plugin hooks: that location configures the repository itself.
+Do not use `.github\hooks` for distributable plugin hooks: that location configures the repository itself.
 
 Agent Plugins 1.0 fixes these component locations. Do not add legacy `skills`, `agents`, or `hooks` path fields to `plugin.json`. No MCP configuration is needed unless you separately choose to add a server.
 
