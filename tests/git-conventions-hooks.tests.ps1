@@ -1,9 +1,10 @@
 #Requires -Version 7
-# Dependency-free tests for the git conventions hooks. Run: pwsh -NoProfile -File tests/git-conventions-hooks.tests.ps1
+# Dependency-free tests for the conventions hooks. Run: pwsh -NoProfile -File tests/git-conventions-hooks.tests.ps1
 $ErrorActionPreference = 'Stop'
 $scripts = Join-Path $PSScriptRoot '..' 'com.github.copilot' 'hooks' 'scripts'
 $enforce = Join-Path $scripts 'enforce-git-conventions.ps1'
-$inject = Join-Path $scripts 'inject-git-conventions.ps1'
+$injectGit = Join-Path $scripts 'inject-git-conventions.ps1'
+$injectReadme = Join-Path $scripts 'inject-readme-conventions.ps1'
 $failures = 0
 $count = 0
 
@@ -136,13 +137,92 @@ $script:count++
 $out = (Invoke-Hook $enforce 'not json') -join ''
 if ($out.Trim()) { $failures++; Write-Host "FAIL: garbage input produced output: $out" -ForegroundColor Red } else { Write-Host 'ok:   garbage input' }
 
-# Inject hook
+# Injection hooks
 $script:count++
-$ctx = ((Invoke-Hook $inject '{"sessionId":"s","timestamp":0,"cwd":".","source":"new"}') -join "`n") | ConvertFrom-Json
-if ($ctx.additionalContext -notmatch 'Git conventions' -or $ctx.additionalContext -notmatch 'feature/') {
-    $failures++; Write-Host 'FAIL: inject hook did not return conventions' -ForegroundColor Red
+$gitCtx = ((Invoke-Hook $injectGit '{"sessionId":"s","timestamp":0,"cwd":".","source":"new"}') -join "`n") | ConvertFrom-Json
+$git = Get-Content -LiteralPath (Join-Path $scripts 'git-conventions.md') -Raw -Encoding utf8
+if ($gitCtx.additionalContext -cne $git) {
+    $failures++; Write-Host 'FAIL: git hook did not return only git conventions' -ForegroundColor Red
 }
-else { Write-Host 'ok:   inject hook' }
+else { Write-Host 'ok:   git injection hook' }
+
+$script:count++
+$readmeCtx = ((Invoke-Hook $injectReadme '{}') -join "`n") | ConvertFrom-Json
+$readme = Get-Content -LiteralPath (Join-Path $scripts 'readme-conventions.md') -Raw -Encoding utf8
+if ($readmeCtx.additionalContext -cne $readme -or $readme -notmatch 'only when creating or editing a file named README\.md') {
+    $failures++; Write-Host 'FAIL: README hook did not return only scoped README conventions' -ForegroundColor Red
+}
+else { Write-Host 'ok:   README injection hook' }
+
+$contexts = @($git, $readme)
+$hooks = (Get-Content -LiteralPath (Join-Path $scripts '..' 'hooks.json') -Raw | ConvertFrom-Json).hooks
+$pluginRoot = (Get-Item (Join-Path $scripts '..' '..' '..')).FullName
+$hookHome = Join-Path ([System.IO.Path]::GetTempPath()) "conventions-inject-tests-$PID"
+$originalHome = $env:COPILOT_HOME
+New-Item -ItemType Directory -Path $hookHome -ErrorAction Stop | Out-Null
+try {
+    $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+    New-Item -ItemType $linkType -Path (Join-Path $hookHome 'hooks') -Target (Get-Item (Join-Path $scripts '..')).FullName -ErrorAction Stop | Out-Null
+    $env:COPILOT_HOME = $hookHome
+    foreach ($eventName in 'sessionStart', 'subagentStart') {
+        $script:count++
+        if ($hooks.$eventName.Count -ne 2) {
+            $failures++; Write-Host "FAIL: $eventName must register two injection hooks" -ForegroundColor Red
+        }
+        else { Write-Host "ok:   $eventName registers two injection hooks" }
+        foreach ($route in 'plugin', 'global') {
+            for ($index = 0; $index -lt $contexts.Count; $index++) {
+                $script:count++
+                $command = $hooks.$eventName[$index].powershell
+                if ($route -eq 'plugin') {
+                    $command = $command.Replace('${PLUGIN_ROOT}', $pluginRoot.Replace("'", "''"))
+                }
+                $output = ('{}' | & pwsh -NoProfile -NonInteractive -Command $command) -join "`n"
+                $exitCode = $LASTEXITCODE
+                $injected = $output | ConvertFrom-Json
+                if ($exitCode -ne 0 -or $injected.additionalContext -cne $contexts[$index]) {
+                    $failures++; Write-Host "FAIL: $eventName $route hook $index" -ForegroundColor Red
+                }
+                else { Write-Host "ok:   $eventName $route hook $index" }
+            }
+        }
+    }
+    foreach ($ruleName in 'git', 'readme') {
+        $fixture = Join-Path $hookHome "$ruleName-only"
+        New-Item -ItemType Directory -Path $fixture -ErrorAction Stop | Out-Null
+        try {
+            Copy-Item -LiteralPath $injectGit, $injectReadme -Destination $fixture
+            Copy-Item -LiteralPath (Join-Path $scripts "$ruleName-conventions.md") -Destination $fixture
+            $script:count++
+            $available = ((Invoke-Hook (Join-Path $fixture "inject-$ruleName-conventions.ps1") '{}') -join "`n") | ConvertFrom-Json
+            $expected = if ($ruleName -eq 'git') { $git } else { $readme }
+            if ($available.additionalContext -cne $expected) {
+                $failures++; Write-Host "FAIL: $ruleName hook depends on the other rule file" -ForegroundColor Red
+            }
+            else { Write-Host "ok:   $ruleName hook works independently" }
+
+            $script:count++
+            $missing = if ($ruleName -eq 'git') { 'readme' } else { 'git' }
+            $errorLog = Join-Path $fixture 'error.txt'
+            $output = ('{}' | pwsh -NoProfile -NonInteractive -File (Join-Path $fixture "inject-$missing-conventions.ps1") 2> $errorLog) -join "`n"
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0 -or $output.Trim() -ne '{}' -or (Get-Content -LiteralPath $errorLog -Raw) -notmatch "Could not load $missing conventions") {
+                $failures++; Write-Host "FAIL: missing $missing rules must report an error without blocking" -ForegroundColor Red
+            }
+            else { Write-Host "ok:   missing $missing rules report an error without blocking" }
+        }
+        finally {
+            Remove-Item -LiteralPath $fixture -Recurse -Force
+        }
+    }
+}
+finally {
+    $env:COPILOT_HOME = $originalHome
+    if (Test-Path -LiteralPath (Join-Path $hookHome 'hooks')) {
+        (Get-Item -LiteralPath (Join-Path $hookHome 'hooks')).Delete()
+    }
+    Remove-Item -LiteralPath $hookHome -Force
+}
 
 Write-Host "`n$($count - $failures)/$count passed"
 exit [int]($failures -gt 0)
