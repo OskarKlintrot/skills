@@ -2,7 +2,7 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-The plugin ships [git conventions hooks](#git-conventions) that make agents write correct commit messages, PR titles, and branch names in every repository, and [README conventions](#readme-conventions) for maintained documentation. Both rule sets load through hooks, including when the plugin is installed without development mappings. It contains no skills, agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+The plugin ships [git conventions hooks](#git-conventions) that make agents write correct commit messages, PR titles, and branch names in every repository, and a [README conventions skill](#readme-conventions) for maintained documentation. Both are available through plugin installation without development mappings. It contains no agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
 
 ## Git conventions
 
@@ -30,11 +30,11 @@ pwsh -NoProfile -File tests\git-conventions-hooks.tests.ps1
 
 ## README conventions
 
-`com.github.copilot\hooks\scripts\readme-conventions.md` applies when creating or editing a file named `README.md` in any directory, and follows each README's existing language and concise style. It treats README files as maintained references: descriptions must match current code and configuration, claims need evidence, and operational procedures must remain useful beyond a particular change. Session summaries, task status and one-time rollout or migration instructions belong elsewhere; change-specific rollout details and cross-PR dependencies belong in PR descriptions.
+`skills\readme-conventions\SKILL.md` applies when creating or editing a file named `README.md` in any directory, and follows each README's existing language and concise style. It treats README files as maintained references: descriptions must match current code and configuration, claims need evidence, and operational procedures must remain useful beyond a particular change. Session summaries, task status and one-time rollout or migration instructions belong elsewhere; change-specific rollout details and cross-PR dependencies belong in PR descriptions.
 
-Each of `sessionStart` and `subagentStart` registers two independent injection hooks: `inject-git-conventions.ps1` loads git rules, and `inject-readme-conventions.ps1` loads README rules. Each hook reads only its own rule file and supplies it as additional context. The README scope is expressed in the rule text, not enforced by a file-matching loader. The README rules are present in every session's context, but apply only to README files. Unlike the git validator, no hook blocks README edits based on their content.
+The skill's name and description let agents discover it for README work, including documentation updates prompted by code or configuration changes. Its full instructions load when the skill is activated, rather than through session or subagent startup hooks. You can also invoke `readme-conventions` explicitly. Activation depends on the agent or an explicit request; it is not enforced by a file-matching loader, and no hook blocks README edits based on their content.
 
-Plugin installation needs no global directory mappings. For local development, the [global hooks mapping](#global-development-mappings-on-windows) loads the same rule files without copying them; the `instructions` mapping is not needed for README conventions. Each injector reports loading errors to stderr and returns empty context rather than blocking the session. A loading error in one rule set does not prevent the other hook from supplying its rules.
+Plugin installation needs no global directory mappings. For local development, the [global skills mapping](#global-development-mappings-on-windows) exposes the same skill without copying it; the `hooks` and `instructions` mappings are not needed for README conventions.
 
 ## Install
 
@@ -194,7 +194,7 @@ The current [plugin reference](https://docs.github.com/en/copilot/reference/copi
 
 Isolated discovery checks with CLI **1.0.103-0** also returned no instruction sources for either an enabled installed plugin or a `--plugin-dir` fixture containing `*.instructions.md` and plain `*.md` rules. As a control, mapping that fixture's rules directory to an isolated personal `instructions` directory discovered both instruction files and preserved `applyTo: "**/README.md"`. These checks establish a discovery limitation, not prompt behavior for every client.
 
-README conventions therefore use startup hooks rather than plugin rules or a personal instruction file. The root `instructions` directory remains available for separate development-only personal instructions and currently contains only `.gitkeep`. Plugin-rule loading has not been verified for other CLI versions or clients.
+README conventions use a skill rather than plugin rules or a personal instruction file. The root `instructions` directory remains available for separate development-only personal instructions and currently contains only `.gitkeep`. Plugin-rule loading has not been verified for other CLI versions or clients.
 
 Recheck support with your installed CLI before adopting plugin rules. Do not rename, copy, or relocate instructions automatically, remove `applyTo`, or enable another loading route without checking scope and duplicate behavior.
 

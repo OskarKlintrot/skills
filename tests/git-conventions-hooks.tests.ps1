@@ -4,7 +4,6 @@ $ErrorActionPreference = 'Stop'
 $scripts = Join-Path $PSScriptRoot '..' 'com.github.copilot' 'hooks' 'scripts'
 $enforce = Join-Path $scripts 'enforce-git-conventions.ps1'
 $injectGit = Join-Path $scripts 'inject-git-conventions.ps1'
-$injectReadme = Join-Path $scripts 'inject-readme-conventions.ps1'
 $failures = 0
 $count = 0
 
@@ -137,7 +136,7 @@ $script:count++
 $out = (Invoke-Hook $enforce 'not json') -join ''
 if ($out.Trim()) { $failures++; Write-Host "FAIL: garbage input produced output: $out" -ForegroundColor Red } else { Write-Host 'ok:   garbage input' }
 
-# Injection hooks
+# Git injection hook and README skill packaging
 $script:count++
 $gitCtx = ((Invoke-Hook $injectGit '{"sessionId":"s","timestamp":0,"cwd":".","source":"new"}') -join "`n") | ConvertFrom-Json
 $git = Get-Content -LiteralPath (Join-Path $scripts 'git-conventions.md') -Raw -Encoding utf8
@@ -147,16 +146,24 @@ if ($gitCtx.additionalContext -cne $git) {
 else { Write-Host 'ok:   git injection hook' }
 
 $script:count++
-$readmeCtx = ((Invoke-Hook $injectReadme '{}') -join "`n") | ConvertFrom-Json
-$readme = Get-Content -LiteralPath (Join-Path $scripts 'readme-conventions.md') -Raw -Encoding utf8
-if ($readmeCtx.additionalContext -cne $readme -or $readme -notmatch 'only when creating or editing a file named README\.md') {
-    $failures++; Write-Host 'FAIL: README hook did not return only scoped README conventions' -ForegroundColor Red
-}
-else { Write-Host 'ok:   README injection hook' }
-
-$contexts = @($git, $readme)
-$hooks = (Get-Content -LiteralPath (Join-Path $scripts '..' 'hooks.json') -Raw | ConvertFrom-Json).hooks
 $pluginRoot = (Get-Item (Join-Path $scripts '..' '..' '..')).FullName
+$readme = Get-Content -LiteralPath (Join-Path $pluginRoot 'skills' 'readme-conventions' 'SKILL.md') -Raw -Encoding utf8
+if ($readme -notmatch '\A---\r?\nname: readme-conventions\r?\ndescription: [^\r\n]*creating or editing README\.md[^\r\n]*\r?\n---\r?\n' -or
+    $readme -match '(?m)^disable-model-invocation:\s*true\s*$' -or
+    $readme -notmatch 'only when creating or editing a file named README\.md') {
+    $failures++; Write-Host 'FAIL: README skill must be discoverable and scoped to README.md files' -ForegroundColor Red
+}
+else { Write-Host 'ok:   README skill metadata and scope' }
+
+$script:count++
+if ((Test-Path -LiteralPath (Join-Path $scripts 'inject-readme-conventions.ps1')) -or
+    (Test-Path -LiteralPath (Join-Path $scripts 'readme-conventions.md'))) {
+    $failures++; Write-Host 'FAIL: README conventions must live only in the skill' -ForegroundColor Red
+}
+else { Write-Host 'ok:   no legacy README hook files' }
+
+$contexts = @($git)
+$hooks = (Get-Content -LiteralPath (Join-Path $scripts '..' 'hooks.json') -Raw | ConvertFrom-Json).hooks
 $hookHome = Join-Path ([System.IO.Path]::GetTempPath()) "conventions-inject-tests-$PID"
 $originalHome = $env:COPILOT_HOME
 New-Item -ItemType Directory -Path $hookHome -ErrorAction Stop | Out-Null
@@ -166,10 +173,10 @@ try {
     $env:COPILOT_HOME = $hookHome
     foreach ($eventName in 'sessionStart', 'subagentStart') {
         $script:count++
-        if ($hooks.$eventName.Count -ne 2) {
-            $failures++; Write-Host "FAIL: $eventName must register two injection hooks" -ForegroundColor Red
+        if ($hooks.$eventName.Count -ne 1) {
+            $failures++; Write-Host "FAIL: $eventName must register only the git injection hook" -ForegroundColor Red
         }
-        else { Write-Host "ok:   $eventName registers two injection hooks" }
+        else { Write-Host "ok:   $eventName registers only the git injection hook" }
         foreach ($route in 'plugin', 'global') {
             for ($index = 0; $index -lt $contexts.Count; $index++) {
                 $script:count++
@@ -187,33 +194,21 @@ try {
             }
         }
     }
-    foreach ($ruleName in 'git', 'readme') {
-        $fixture = Join-Path $hookHome "$ruleName-only"
-        New-Item -ItemType Directory -Path $fixture -ErrorAction Stop | Out-Null
-        try {
-            Copy-Item -LiteralPath $injectGit, $injectReadme -Destination $fixture
-            Copy-Item -LiteralPath (Join-Path $scripts "$ruleName-conventions.md") -Destination $fixture
-            $script:count++
-            $available = ((Invoke-Hook (Join-Path $fixture "inject-$ruleName-conventions.ps1") '{}') -join "`n") | ConvertFrom-Json
-            $expected = if ($ruleName -eq 'git') { $git } else { $readme }
-            if ($available.additionalContext -cne $expected) {
-                $failures++; Write-Host "FAIL: $ruleName hook depends on the other rule file" -ForegroundColor Red
-            }
-            else { Write-Host "ok:   $ruleName hook works independently" }
-
-            $script:count++
-            $missing = if ($ruleName -eq 'git') { 'readme' } else { 'git' }
-            $errorLog = Join-Path $fixture 'error.txt'
-            $output = ('{}' | pwsh -NoProfile -NonInteractive -File (Join-Path $fixture "inject-$missing-conventions.ps1") 2> $errorLog) -join "`n"
-            $exitCode = $LASTEXITCODE
-            if ($exitCode -ne 0 -or $output.Trim() -ne '{}' -or (Get-Content -LiteralPath $errorLog -Raw) -notmatch "Could not load $missing conventions") {
-                $failures++; Write-Host "FAIL: missing $missing rules must report an error without blocking" -ForegroundColor Red
-            }
-            else { Write-Host "ok:   missing $missing rules report an error without blocking" }
+    $fixture = Join-Path $hookHome 'missing-git-rules'
+    New-Item -ItemType Directory -Path $fixture -ErrorAction Stop | Out-Null
+    try {
+        Copy-Item -LiteralPath $injectGit -Destination $fixture
+        $script:count++
+        $errorLog = Join-Path $fixture 'error.txt'
+        $output = ('{}' | pwsh -NoProfile -NonInteractive -File (Join-Path $fixture 'inject-git-conventions.ps1') 2> $errorLog) -join "`n"
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0 -or $output.Trim() -ne '{}' -or (Get-Content -LiteralPath $errorLog -Raw) -notmatch 'Could not load git conventions') {
+            $failures++; Write-Host 'FAIL: missing git rules must report an error without blocking' -ForegroundColor Red
         }
-        finally {
-            Remove-Item -LiteralPath $fixture -Recurse -Force
-        }
+        else { Write-Host 'ok:   missing git rules report an error without blocking' }
+    }
+    finally {
+        Remove-Item -LiteralPath $fixture -Recurse -Force
     }
 }
 finally {
