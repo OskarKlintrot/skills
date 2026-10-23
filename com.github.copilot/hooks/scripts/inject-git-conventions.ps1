@@ -1,13 +1,14 @@
 #Requires -Version 7
-# sessionStart / subagentStart hook: injects the git conventions as additional context.
+# sessionStart / subagentStart hook: injects git conventions as additional context.
 $ErrorActionPreference = 'Stop'
 try {
     [Console]::In.ReadToEnd() | Out-Null
-    $text = Get-Content -Raw -Encoding utf8 (Join-Path $PSScriptRoot 'git-conventions.md')
+    $git = Get-Content -Raw -Encoding utf8 (Join-Path $PSScriptRoot 'git-conventions.md')
     [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-    @{ additionalContext = $text } | ConvertTo-Json -Compress
+    @{ additionalContext = $git } | ConvertTo-Json -Compress
 }
 catch {
+    [Console]::Error.WriteLine("Could not load git conventions: $($_.Exception.Message)")
     '{}'
 }
 exit 0
