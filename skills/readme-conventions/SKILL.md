@@ -1,3 +1,8 @@
+---
+name: readme-conventions
+description: Use when creating or editing README.md files in any directory, including README updates needed after code or configuration changes. Keep documentation accurate, lasting, and grounded in the current repository.
+---
+
 # README conventions
 
 Apply these rules only when creating or editing a file named README.md, in any
