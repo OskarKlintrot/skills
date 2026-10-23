@@ -1,6 +1,6 @@
 #Requires -Version 7
 # preToolUse hook: denies tool calls that create commits, pull request titles, merge commit messages,
-# or branches that break the git conventions in git-conventions.md.
+# or branches that break the conventions in skills/git-conventions/SKILL.md.
 # Prints nothing (default permission flow) when the call is fine or cannot be parsed.
 param(
     [string]$Payload

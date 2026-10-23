@@ -2,25 +2,25 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-The plugin ships [git conventions hooks](#git-conventions) that make agents write correct commit messages, PR titles, and branch names in every repository, and a [README conventions skill](#readme-conventions) for maintained documentation. Both are available through plugin installation without development mappings. It contains no agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, and a [README conventions skill](#readme-conventions) for maintained documentation. Both are available through plugin installation without development mappings. It contains no agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
 
 ## Git conventions
 
-The rules apply globally, whether you load the plugin at user level or use the [global development mappings](#global-development-mappings-on-windows). The hook commands resolve their scripts from `${PLUGIN_ROOT}` when loaded as a plugin, and from the user-level hooks directory otherwise. The rules text lives in `com.github.copilot\hooks\scripts\git-conventions.md`.
+The rules live in `skills\git-conventions\SKILL.md`. The skill is available globally through user-level plugin installation or the [global skills mapping](#global-development-mappings-on-windows). Its name and description let agents discover it before creating branches, writing commits or PRs, or merging PRs. Full instructions load when the skill is activated, not at session or subagent startup. You can also invoke `git-conventions` explicitly.
 
 - **Commit messages and PR titles:** `<type>(<optional scope>): <Capitalized description>`, where type is one of `feat`, `fix`, `perf`, `docs`, `style`, `refactor`, `test`, or `build`. The first line is at most 72 characters.
 - **Language and tone:** English, plain and concise (based on [`bro`](https://github.com/cursor/plugins/tree/main/pstack/skills/bro)). Messages containing `åäöæø` are rejected as a heuristic for non-English text.
 - **Branches:** `feature/<kebab-case>` or `release/<name>`.
 
-Two mechanisms enforce this:
+Skill activation depends on the agent or an explicit request. Independently, a `preToolUse` hook denies tool calls that break the checkable rules. It checks:
 
-1. `sessionStart` and `subagentStart` hooks inject the rules into the agent's context.
-2. A `preToolUse` hook denies tool calls that break them. It checks:
-   - `git commit` (`-m`, `--message`, `-F`, heredocs, and PowerShell here-strings), and branch creation via `git checkout`, `git switch`, `git branch`, and `git worktree add`, in bash and PowerShell tool calls.
-   - `gh pr create`, `gh pr edit`, and `gh pr merge` (GitHub and GHE), and `az repos pr create` and `az repos pr update` (Azure DevOps).
-   - GitHub and Azure DevOps MCP tools that create or update pull requests or create branches.
+- `git commit` (`-m`, `--message`, `-F`, heredocs, and PowerShell here-strings), and branch creation via `git checkout`, `git switch`, `git branch`, and `git worktree add`, in bash and PowerShell tool calls.
+- `gh pr create`, `gh pr edit`, and `gh pr merge` (GitHub and GHE), and `az repos pr create` and `az repos pr update` (Azure DevOps).
+- GitHub and Azure DevOps MCP tools that create or update pull requests or create branches.
 
-The hooks only affect agent tool calls, not commands you run yourself. Messages that cannot be resolved statically, such as `$variable` values, are allowed. `fixup!`, `squash!`, and `amend!` commits are skipped. The scripts require PowerShell 7 (`pwsh`) on `PATH`. If the validator fails internally, it allows the call.
+The hook loads through plugin installation or the global `hooks` mapping. Its commands resolve the validator from `${PLUGIN_ROOT}` when loaded as a plugin, and from the user-level hooks directory otherwise. Validation does not depend on skill activation.
+
+The hook only affects agent tool calls, not commands you run yourself. Messages that cannot be resolved statically, such as `$variable` values, are allowed. `fixup!`, `squash!`, and `amend!` commits are skipped. The script requires PowerShell 7 (`pwsh`) on `PATH`. If the validator fails internally, it allows the call.
 
 Run the tests with:
 
