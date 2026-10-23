@@ -3,7 +3,6 @@
 $ErrorActionPreference = 'Stop'
 $scripts = Join-Path $PSScriptRoot '..' 'com.github.copilot' 'hooks' 'scripts'
 $enforce = Join-Path $scripts 'enforce-git-conventions.ps1'
-$injectGit = Join-Path $scripts 'inject-git-conventions.ps1'
 $failures = 0
 $count = 0
 
@@ -136,17 +135,17 @@ $script:count++
 $out = (Invoke-Hook $enforce 'not json') -join ''
 if ($out.Trim()) { $failures++; Write-Host "FAIL: garbage input produced output: $out" -ForegroundColor Red } else { Write-Host 'ok:   garbage input' }
 
-# Git injection hook and README skill packaging
-$script:count++
-$gitCtx = ((Invoke-Hook $injectGit '{"sessionId":"s","timestamp":0,"cwd":".","source":"new"}') -join "`n") | ConvertFrom-Json
-$git = Get-Content -LiteralPath (Join-Path $scripts 'git-conventions.md') -Raw -Encoding utf8
-if ($gitCtx.additionalContext -cne $git) {
-    $failures++; Write-Host 'FAIL: git hook did not return only git conventions' -ForegroundColor Red
-}
-else { Write-Host 'ok:   git injection hook' }
-
+# Skill packaging
 $script:count++
 $pluginRoot = (Get-Item (Join-Path $scripts '..' '..' '..')).FullName
+$git = Get-Content -LiteralPath (Join-Path $pluginRoot 'skills' 'git-conventions' 'SKILL.md') -Raw -Encoding utf8
+if ($git -notmatch '\A---\r?\nname: git-conventions\r?\ndescription: [^\r\n]+\r?\n---\r?\n' -or
+    $git -match '(?m)^disable-model-invocation:\s*true\s*$') {
+    $failures++; Write-Host 'FAIL: git skill must be discoverable' -ForegroundColor Red
+}
+else { Write-Host 'ok:   git skill metadata' }
+
+$script:count++
 $readme = Get-Content -LiteralPath (Join-Path $pluginRoot 'skills' 'readme-conventions' 'SKILL.md') -Raw -Encoding utf8
 if ($readme -notmatch '\A---\r?\nname: readme-conventions\r?\ndescription: [^\r\n]*creating or editing README\.md[^\r\n]*\r?\n---\r?\n' -or
     $readme -match '(?m)^disable-model-invocation:\s*true\s*$' -or
@@ -155,60 +154,53 @@ if ($readme -notmatch '\A---\r?\nname: readme-conventions\r?\ndescription: [^\r\
 }
 else { Write-Host 'ok:   README skill metadata and scope' }
 
-$script:count++
-if ((Test-Path -LiteralPath (Join-Path $scripts 'inject-readme-conventions.ps1')) -or
-    (Test-Path -LiteralPath (Join-Path $scripts 'readme-conventions.md'))) {
-    $failures++; Write-Host 'FAIL: README conventions must live only in the skill' -ForegroundColor Red
+foreach ($ruleName in 'git', 'readme') {
+    $script:count++
+    if ((Test-Path -LiteralPath (Join-Path $scripts "inject-$ruleName-conventions.ps1")) -or
+        (Test-Path -LiteralPath (Join-Path $scripts "$ruleName-conventions.md"))) {
+        $failures++; Write-Host "FAIL: $ruleName conventions must live only in the skill" -ForegroundColor Red
+    }
+    else { Write-Host "ok:   no legacy $ruleName hook files" }
 }
-else { Write-Host 'ok:   no legacy README hook files' }
 
-$contexts = @($git)
+# Only command validation remains registered.
 $hooks = (Get-Content -LiteralPath (Join-Path $scripts '..' 'hooks.json') -Raw | ConvertFrom-Json).hooks
-$hookHome = Join-Path ([System.IO.Path]::GetTempPath()) "conventions-inject-tests-$PID"
+$script:count++
+if (@($hooks.PSObject.Properties.Name).Count -ne 1 -or
+    $hooks.PSObject.Properties.Name -notcontains 'preToolUse' -or $hooks.preToolUse.Count -ne 1) {
+    $failures++; Write-Host 'FAIL: only the preToolUse validation hook must be registered' -ForegroundColor Red
+}
+else { Write-Host 'ok:   only preToolUse validation is registered' }
+
+$hookHome = Join-Path ([System.IO.Path]::GetTempPath()) "conventions-validation-tests-$PID"
 $originalHome = $env:COPILOT_HOME
 New-Item -ItemType Directory -Path $hookHome -ErrorAction Stop | Out-Null
 try {
     $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
     New-Item -ItemType $linkType -Path (Join-Path $hookHome 'hooks') -Target (Get-Item (Join-Path $scripts '..')).FullName -ErrorAction Stop | Out-Null
     $env:COPILOT_HOME = $hookHome
-    foreach ($eventName in 'sessionStart', 'subagentStart') {
-        $script:count++
-        if ($hooks.$eventName.Count -ne 1) {
-            $failures++; Write-Host "FAIL: $eventName must register only the git injection hook" -ForegroundColor Red
+    foreach ($route in 'plugin', 'global') {
+        $command = $hooks.preToolUse[0].powershell
+        if ($route -eq 'plugin') {
+            $command = $command.Replace('${PLUGIN_ROOT}', $pluginRoot.Replace("'", "''"))
         }
-        else { Write-Host "ok:   $eventName registers only the git injection hook" }
-        foreach ($route in 'plugin', 'global') {
-            for ($index = 0; $index -lt $contexts.Count; $index++) {
-                $script:count++
-                $command = $hooks.$eventName[$index].powershell
-                if ($route -eq 'plugin') {
-                    $command = $command.Replace('${PLUGIN_ROOT}', $pluginRoot.Replace("'", "''"))
-                }
-                $output = ('{}' | & pwsh -NoProfile -NonInteractive -Command $command) -join "`n"
-                $exitCode = $LASTEXITCODE
-                $injected = $output | ConvertFrom-Json
-                if ($exitCode -ne 0 -or $injected.additionalContext -cne $contexts[$index]) {
-                    $failures++; Write-Host "FAIL: $eventName $route hook $index" -ForegroundColor Red
-                }
-                else { Write-Host "ok:   $eventName $route hook $index" }
+        foreach ($subject in 'build: Update tools', 'invalid message') {
+            $script:count++
+            $payload = @{
+                toolName = 'powershell'
+                toolArgs = (Sh "git commit -m '$subject'" | ConvertTo-Json -Compress)
+            } | ConvertTo-Json -Compress
+            $output = ($payload | & pwsh -NoProfile -NonInteractive -Command $command) -join "`n"
+            $exitCode = $LASTEXITCODE
+            $denied = $false
+            if ($output.Trim()) {
+                $denied = ($output | ConvertFrom-Json).permissionDecision -eq 'deny'
             }
+            if ($exitCode -ne 0 -or $denied -ne ($subject -eq 'invalid message')) {
+                $failures++; Write-Host "FAIL: $route validation for '$subject': $output" -ForegroundColor Red
+            }
+            else { Write-Host "ok:   $route validation for '$subject'" }
         }
-    }
-    $fixture = Join-Path $hookHome 'missing-git-rules'
-    New-Item -ItemType Directory -Path $fixture -ErrorAction Stop | Out-Null
-    try {
-        Copy-Item -LiteralPath $injectGit -Destination $fixture
-        $script:count++
-        $errorLog = Join-Path $fixture 'error.txt'
-        $output = ('{}' | pwsh -NoProfile -NonInteractive -File (Join-Path $fixture 'inject-git-conventions.ps1') 2> $errorLog) -join "`n"
-        $exitCode = $LASTEXITCODE
-        if ($exitCode -ne 0 -or $output.Trim() -ne '{}' -or (Get-Content -LiteralPath $errorLog -Raw) -notmatch 'Could not load git conventions') {
-            $failures++; Write-Host 'FAIL: missing git rules must report an error without blocking' -ForegroundColor Red
-        }
-        else { Write-Host 'ok:   missing git rules report an error without blocking' }
-    }
-    finally {
-        Remove-Item -LiteralPath $fixture -Recurse -Force
     }
 }
 finally {

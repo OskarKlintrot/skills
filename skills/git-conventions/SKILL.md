@@ -1,3 +1,8 @@
+---
+name: git-conventions
+description: Use before creating branches, writing commit messages or pull request titles and descriptions, or merging pull requests. Apply English naming and message conventions for GitHub, GitHub Enterprise, and Azure DevOps.
+---
+
 # Git conventions
 
 Follow these rules for every commit message, pull request title, squash/merge commit message, and branch you create. They apply to Azure DevOps, GitHub, and GitHub Enterprise alike. A `preToolUse` hook rejects tool calls that break the checkable rules.
