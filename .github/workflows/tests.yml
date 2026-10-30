@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check test runtimes
+        shell: bash
+        run: |
+          pwsh --version
+          bash --version
+          jq --version
+
+      - name: Run PowerShell tests
+        shell: pwsh
+        run: ./tests/git-conventions-hooks.tests.ps1
+
+      - name: Run Bash tests
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash tests/git-conventions-hooks.tests.sh

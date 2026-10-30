@@ -1,6 +1,6 @@
 #Requires -Version 7
 # preToolUse hook: denies tool calls that create commits, pull request titles, merge commit messages,
-# or branches that break the conventions in skills/git-conventions/SKILL.md.
+# or branches that break the git-conventions skill.
 # Prints nothing (default permission flow) when the call is fine or cannot be parsed.
 param(
     [string]$Payload
@@ -49,6 +49,7 @@ function Split-ShellCommand {
     $escape = if ($IsPowerShell) { '`' } else { '\' }
     $segments = [System.Collections.Generic.List[object]]::new()
     $tokens = [System.Collections.Generic.List[string]]::new()
+    $heredocs = [System.Collections.Generic.List[object]]::new()
     $sb = [System.Text.StringBuilder]::new()
     $hasToken = $false
     $i = 0
@@ -72,6 +73,15 @@ function Split-ShellCommand {
 
     while ($i -lt $n) {
         $c = $Command[$i]
+
+        if (-not $IsPowerShell -and $c -eq '<' -and $i + 1 -lt $n -and $Command[$i + 1] -eq '<' -and ($i -eq 0 -or $Command[$i - 1] -ne '<') -and ($i + 2 -ge $n -or $Command[$i + 2] -ne '<')) {
+            $header = [regex]::Match($Command.Substring($i), '^<<(?<tabs>-?)[ \t]*(?:''(?<single>[^'']*)''|"(?<double>[^"]*)"|(?<bare>[A-Za-z_][A-Za-z0-9_]*))(?=$|[\s;|&<>)])')
+            if (-not $header.Success) { return , @() }
+            $delimiter = if ($header.Groups['single'].Success) { $header.Groups['single'].Value } elseif ($header.Groups['double'].Success) { $header.Groups['double'].Value } else { $header.Groups['bare'].Value }
+            $heredocs.Add(@{ Delimiter = $delimiter; StripTabs = $header.Groups['tabs'].Value -eq '-' })
+            $i += $header.Length
+            continue
+        }
 
         if ($IsPowerShell -and -not $hasToken -and $c -eq '@' -and $i + 1 -lt $n -and ($Command[$i + 1] -eq '"' -or $Command[$i + 1] -eq "'")) {
             $q = $Command[$i + 1]
@@ -146,6 +156,19 @@ function Split-ShellCommand {
         if ($c -in "`n", ';', '&', '|', '(', ')') {
             . $endSegment
             $i++
+            if ($c -eq "`n" -and $heredocs.Count -gt 0) {
+                foreach ($heredoc in $heredocs) {
+                    while ($i -lt $n) {
+                        $end = $Command.IndexOf("`n", $i)
+                        if ($end -lt 0) { $end = $n }
+                        $line = $Command.Substring($i, $end - $i).TrimEnd("`r")
+                        if ($heredoc.StripTabs) { $line = $line.TrimStart("`t") }
+                        $i = $end + 1
+                        if ($line -ceq $heredoc.Delimiter) { break }
+                    }
+                }
+                $heredocs.Clear()
+            }
             continue
         }
 
@@ -173,7 +196,7 @@ function Resolve-MessageValue {
 
 function Get-CommandBaseName {
     param([string]$Token)
-    return ([System.IO.Path]::GetFileName($Token) -replace '\.exe$', '').ToLowerInvariant()
+    return ([System.IO.Path]::GetFileName($Token.Replace('\', '/')) -replace '\.exe$', '').ToLowerInvariant()
 }
 
 function Get-OptionValue {
@@ -199,7 +222,7 @@ function Test-GitSegment {
     $workDir = $Cwd
     while ($k -lt $CmdArgs.Count -and $CmdArgs[$k].StartsWith('-')) {
         if ($CmdArgs[$k] -ceq '-C' -and $k + 1 -lt $CmdArgs.Count) {
-            $workDir = if ([System.IO.Path]::IsPathRooted($CmdArgs[$k + 1])) { $CmdArgs[$k + 1] } else { Join-Path $Cwd $CmdArgs[$k + 1] }
+            $workDir = if ([System.IO.Path]::IsPathRooted($CmdArgs[$k + 1])) { $CmdArgs[$k + 1] } elseif ($workDir) { Join-Path $workDir $CmdArgs[$k + 1] } else { $null }
             $k += 2
         }
         elseif ($CmdArgs[$k] -in '-c', '--git-dir', '--work-tree', '--namespace' -and $k + 1 -lt $CmdArgs.Count) {
@@ -227,11 +250,16 @@ function Test-GitSegment {
                 }
                 if ($t -match '^--message=(.*)$') { $message = Resolve-MessageValue $Matches[1]; break }
                 if ($t -cmatch '^-m(.+)$') { $message = Resolve-MessageValue $Matches[1]; break }
-                if (($t -cmatch '^-[a-zA-Z]*F$' -or $t -eq '--file') -and $j + 1 -lt $rest.Count) {
-                    $file = $rest[$j + 1]
+                $file = if (($t -cmatch '^-[a-zA-Z]*F$' -or $t -eq '--file') -and $j + 1 -lt $rest.Count) {
+                    $rest[$j + 1]
+                }
+                elseif ($t -match '^--file=(.*)$') { $Matches[1] }
+                elseif ($t -cmatch '^-F(.+)$') { $Matches[1] }
+                else { $null }
+                if ($null -ne $file) {
                     if ($file -ne '-' -and -not $file.StartsWith('$')) {
-                        $path = if ([System.IO.Path]::IsPathRooted($file)) { $file } else { Join-Path $workDir $file }
-                        if (Test-Path -LiteralPath $path -PathType Leaf) {
+                        $path = if ([System.IO.Path]::IsPathRooted($file)) { $file } elseif ($workDir) { Join-Path $workDir $file } else { $null }
+                        if ($path -and (Test-Path -LiteralPath $path -PathType Leaf)) {
                             $message = (Get-Content -LiteralPath $path -Encoding utf8 | Where-Object { $_ -notmatch '^#' }) -join "`n"
                         }
                     }
@@ -306,14 +334,18 @@ function Test-AzSegment {
 
 function Test-ShellCommand {
     param([string]$Command, [bool]$IsPowerShell, [string]$Cwd)
+    $workDir = $Cwd
     foreach ($segment in (Split-ShellCommand -Command $Command -IsPowerShell $IsPowerShell)) {
         $tokens = @($segment | Where-Object { $_ -notmatch '^[A-Za-z_][A-Za-z0-9_]*=' })
         if ($tokens.Count -eq 0) { continue }
         $rest = @(if ($tokens.Count -gt 1) { $tokens[1..($tokens.Count - 1)] })
         switch (Get-CommandBaseName $tokens[0]) {
-            'git' { Test-GitSegment -CmdArgs $rest -Cwd $Cwd }
+            'git' { Test-GitSegment -CmdArgs $rest -Cwd $workDir }
             'gh' { Test-GhSegment -CmdArgs $rest }
             'az' { Test-AzSegment -CmdArgs $rest }
+            { $_ -in 'cd', 'chdir', 'set-location', 'sl', 'pushd', 'popd', 'push-location', 'pop-location' } {
+                $workDir = $null
+            }
         }
     }
 }

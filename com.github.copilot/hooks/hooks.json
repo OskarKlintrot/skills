@@ -5,8 +5,9 @@
       {
         "type": "command",
         "matcher": "bash|powershell|.*pull_request.*|.*create_branch.*",
-        "bash": "r='${PLUGIN_ROOT}'; case \"$r\" in '$'*) h=\"$COPILOT_HOME\"; [ -n \"$h\" ] || h=\"$HOME/.copilot\"; s=\"$h/hooks/scripts\";; *) s=\"$r/com.github.copilot/hooks/scripts\";; esac; exec pwsh -NoProfile -NonInteractive -File \"$s/enforce-git-conventions.ps1\"",
-        "powershell": "$r='${PLUGIN_ROOT}'; if ($r.StartsWith('$')) { $h=$env:COPILOT_HOME; if (-not $h) { $h=Join-Path $HOME '.copilot' }; $s=Join-Path $h 'hooks/scripts' } else { $s=Join-Path $r 'com.github.copilot/hooks/scripts' }; pwsh -NoProfile -NonInteractive -File (Join-Path $s 'enforce-git-conventions.ps1')",
+        "env": { "OSKAR_TOOLS_PLUGIN_ROOT": "${PLUGIN_ROOT}" },
+        "bash": "r=\"${OSKAR_TOOLS_PLUGIN_ROOT:-}\"; case \"$r\" in ''|'$'*) h=\"$COPILOT_HOME\"; [ -n \"$h\" ] || h=\"$HOME/.copilot\"; s=\"$h/hooks/scripts\";; *) s=\"$r/com.github.copilot/hooks/scripts\";; esac; exec bash \"$s/enforce-git-conventions.sh\"",
+        "powershell": "$r=$env:OSKAR_TOOLS_PLUGIN_ROOT; if (-not $r -or $r.StartsWith('$')) { $h=$env:COPILOT_HOME; if (-not $h) { $h=Join-Path $HOME '.copilot' }; $s=Join-Path $h 'hooks/scripts' } else { $s=Join-Path $r 'com.github.copilot/hooks/scripts' }; pwsh -NoProfile -NonInteractive -File (Join-Path $s 'enforce-git-conventions.ps1')",
         "timeoutSec": 15
       }
     ]

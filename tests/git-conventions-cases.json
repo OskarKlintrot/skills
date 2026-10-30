@@ -1,0 +1,1094 @@
+[
+  {
+    "name": "bash valid commit",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"feat: Add name to payment card\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash valid commit with scope",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git add . && git commit -m \\\"fix(api): Handle missing card\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash invalid type",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"feature: Add card\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash lowercase subject",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"feat: add card\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash no type",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m 'Add card'\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash uppercase type",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"Feat: Add card\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash swedish",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"feat: Lägg till kort\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash too long",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"feat: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash -am",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -am \\\"docs: Explain setup\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash -am invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -am \\\"updated docs\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash --message=",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit --message=\\\"test: Add tests\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash --message= invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit --message=\\\"wip\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash git -C",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git -C /tmp/repo commit -m \\\"wip\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash heredoc valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"$(cat <<'EOF'\\nbuild: Update pipeline\\n\\nLonger body.\\nEOF\\n)\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash heredoc invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"$(cat <<'EOF'\\nUpdate pipeline\\nEOF\\n)\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash multiple -m first checked",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"refactor: Rename variable\\\" -m \\\"Body text\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash amend no-edit",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit --amend --no-edit\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash fixup",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit --fixup HEAD~1\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash variable message",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"$MSG\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash chained invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git status; git commit -m \\\"oops\\\" && git push\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash not git",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"echo \\\"git commit -m oops\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "bash git log",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git --no-pager log --oneline -5\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "pwsh valid commit",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"perf: Use HashSet\\\"\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "pwsh invalid commit",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m 'Fixed stuff'\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "pwsh backtick newline",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m \\\"style: Format code`n`nCo-authored-by: X <x@y>\\\"\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "pwsh here-string valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m @\\\"\\nfeat: Add thing\\n\\nBody\\n\\\"@\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "pwsh here-string invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -m @'\\nadd thing\\n'@\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "pwsh git.exe",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"& \\\"C:\\\\Program Files\\\\Git\\\\cmd\\\\git.exe\\\" commit -m \\\"nope\\\"\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "commit -F valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -F good.txt\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "commit -F invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -F bad.txt\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "commit -F missing",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git commit -F missing.txt\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "checkout -b valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git checkout -b feature/add-payment-card\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "checkout -b invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git checkout -b add-payment-card\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "checkout -b uppercase",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git checkout -b feature/AddCard\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "checkout -b swedish",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git checkout -b feature/lägg-till\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "checkout existing",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git checkout master\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "switch -c valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git switch -c feature/fix-null-check\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "switch -c invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git switch -c bugfix/null\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "switch --create=",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git switch --create=my-branch\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "branch create valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git branch feature/new-thing origin/master\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "branch create invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git branch new-thing\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "branch delete",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git branch -D whatever\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "branch list",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git branch --list \\\"feat*\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "branch show-current",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git branch --show-current\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "branch rename invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git branch -m old-name new_name\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "branch rename valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git branch -m feature/better-name\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "worktree add -b invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git worktree add -b temp ../wt\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "release branch",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"git checkout -b release/1.2.0\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "gh pr create valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"gh pr create --title \\\"feat: Add card\\\" --body \\\"Adds it.\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "gh pr create invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"gh pr create --title \\\"Add card\\\" --body \\\"x\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "gh pr create -t invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"gh pr create -t \\\"add card\\\"\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "gh pr create GHE",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"GH_HOST=github.example.com gh pr create --title=\\\"WIP\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "gh pr edit invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"gh pr edit 12 --title \\\"Update\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "gh pr merge subject invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"gh pr merge 12 --squash --subject \\\"Merge it\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "gh pr merge subject valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"gh pr merge 12 --squash --subject \\\"fix: Correct price\\\"\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "gh pr view",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"gh pr view 12\",\"description\":\"test\"}",
+      "toolName": "bash",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "az pr create invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"az repos pr create --title \\\"Add card\\\" --source-branch feature/x\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "az pr create valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"az repos pr create --title \\\"feat: Add card\\\" --source-branch feature/x\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "az pr update merge msg invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"command\":\"az repos pr update --id 1 --merge-commit-message \\\"merged\\\"\",\"description\":\"test\"}",
+      "toolName": "powershell",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "ADO PR create invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"repositoryId\":\"r\",\"action\":\"create\",\"title\":\"Add card\"}",
+      "toolName": "azure-devops-repo_pull_request_write",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "ADO PR create valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"repositoryId\":\"r\",\"action\":\"create\",\"title\":\"feat: Add card\"}",
+      "toolName": "azure-devops-repo_pull_request_write",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "ADO PR vote",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"action\":\"vote\",\"vote\":\"Approved\"}",
+      "toolName": "azure-devops-repo_pull_request_write",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "ADO merge commit invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"action\":\"update\",\"mergeCommitMessage\":\"squashed\"}",
+      "toolName": "azure-devops-repo_pull_request_write",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "ADO branch invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"branchName\":\"my-branch\",\"repositoryId\":\"r\"}",
+      "toolName": "azure-devops-repo_create_branch",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "ADO branch valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"branchName\":\"feature/my-branch\",\"repositoryId\":\"r\"}",
+      "toolName": "azure-devops-repo_create_branch",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "GitHub MCP PR create invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"repo\":\"r\",\"owner\":\"o\",\"title\":\"Update stuff\"}",
+      "toolName": "github-mcp-server-create_pull_request",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "GitHub MCP PR update valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"title\":\"docs: Explain setup\"}",
+      "toolName": "github-mcp-server-update_pull_request",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "GitHub MCP merge invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"commit_title\":\"Merge PR\",\"merge_method\":\"squash\"}",
+      "toolName": "github-mcp-server-merge_pull_request",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "GitHub MCP branch invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"branch\":\"Fix_Thing\"}",
+      "toolName": "github-mcp-server-create_branch",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "App create_pull_request invalid",
+    "deny": true,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"title\":\"Lägg till kort\"}",
+      "toolName": "create_pull_request",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "App update_pull_request valid",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"title\":\"test: Cover edge case\"}",
+      "toolName": "update_pull_request",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "VS Code format deny",
+    "deny": true,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "timestamp": "2026-01-01T00:00:00Z",
+      "tool_name": "Bash",
+      "hook_event_name": "PreToolUse",
+      "session_id": "s",
+      "tool_input": {
+        "command": "git commit -m \"oops\"",
+        "description": "test"
+      }
+    }
+  },
+  {
+    "name": "unrelated tool",
+    "deny": false,
+    "payload": {
+      "sessionId": "s",
+      "toolArgs": "{\"path\":\"x\"}",
+      "toolName": "view",
+      "cwd": "{{CWD}}",
+      "timestamp": 0
+    }
+  },
+  {
+    "name": "subject exactly 72 characters",
+    "deny": false,
+    "payload": {
+      "toolName": "create_pull_request",
+      "toolArgs": {"title": "feat: A12345678901234567890123456789012345678901234567890123456789012345"}
+    }
+  },
+  {
+    "name": "subject 73 characters",
+    "deny": true,
+    "payload": {
+      "toolName": "create_pull_request",
+      "toolArgs": {"title": "feat: A123456789012345678901234567890123456789012345678901234567890123456"}
+    }
+  },
+  {
+    "name": "long body does not affect subject limit",
+    "deny": false,
+    "payload": {
+      "toolName": "create_pull_request",
+      "toolArgs": {"title": "docs: Explain setup\n\nThis body is deliberately longer than seventy-two characters and does not change the subject length."}
+    }
+  },
+  {
+    "name": "non-English body is checked",
+    "deny": true,
+    "payload": {
+      "toolName": "create_pull_request",
+      "toolArgs": {"title": "docs: Explain setup\n\nFörklara installationen."}
+    }
+  },
+  {
+    "name": "UTF-16 subject exactly 72 characters",
+    "deny": false,
+    "payload": {
+      "toolName": "create_pull_request",
+      "toolArgs": {"title": "feat: A123456789012345678901234567890123456789012345678901234567890123\uD83D\uDE80"}
+    }
+  },
+  {
+    "name": "UTF-16 subject 73 characters",
+    "deny": true,
+    "payload": {
+      "toolName": "create_pull_request",
+      "toolArgs": {"title": "feat: A1234567890123456789012345678901234567890123456789012345678901234\uD83D\uDE80"}
+    }
+  },
+  {
+    "name": "fixup commit is exempt",
+    "deny": false,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "git commit -m 'fixup! Original subject'"}
+    }
+  },
+  {
+    "name": "CRLF PowerShell here-string",
+    "deny": false,
+    "payload": {
+      "toolName": "powershell",
+      "toolArgs": {"command": "git commit -m @'\r\nbuild: Update pipeline\r\n\r\nBody\r\n'@"}
+    }
+  },
+  {
+    "name": "full branch ref",
+    "deny": false,
+    "payload": {
+      "toolName": "github-create_branch",
+      "toolArgs": {"branch": "refs/heads/feature/add-card"}
+    }
+  },
+  {
+    "name": "tool input object format",
+    "deny": true,
+    "payload": {
+      "tool_name": "powershell",
+      "tool_input": {"command": "git switch -c Wrong_Name"}
+    }
+  },
+  {
+    "name": "unresolvable command substitution is not executed",
+    "deny": false,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "git commit -m \"$(touch SHOULD_NOT_EXIST)\""}
+    }
+  },
+  {
+    "name": "invalid tool arguments JSON allows",
+    "deny": false,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": "not json"
+    }
+  },
+  {
+    "name": "repeated relative git -C reads nested invalid message",
+    "deny": true,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "powershell",
+      "toolArgs": {"command": "git -C repo -C sub commit -F msg.txt"}
+    }
+  },
+  {
+    "name": "repeated relative git -C ignores invalid sibling message",
+    "deny": false,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "bash",
+      "toolArgs": {"command": "git -C repo -C sub commit -F good.txt"}
+    }
+  },
+  {
+    "name": "quoted Bash heredoc body is data",
+    "deny": false,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "cat <<'EOF' >example.sh\ngit commit -m 'wip'\nEOF"}
+    }
+  },
+  {
+    "name": "unquoted Bash heredoc body is data",
+    "deny": false,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "cat <<EOF >example.sh\ngit commit -m 'wip'\nEOF"}
+    }
+  },
+  {
+    "name": "tab-stripped Bash heredoc body is data",
+    "deny": false,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "cat <<-\"EOF\"\n\tgit commit -m 'wip'\n\tEOF"}
+    }
+  },
+  {
+    "name": "multiple Bash heredoc bodies are data",
+    "deny": false,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "cat <<'FIRST' <<'SECOND'\ngit commit -m 'wip'\nFIRST\ngit switch -c invalid\nSECOND"}
+    }
+  },
+  {
+    "name": "real command after Bash heredoc is checked",
+    "deny": true,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "cat <<'EOF'\ngit commit -m 'wip'\nEOF\ngit commit -m 'invalid subject'"}
+    }
+  },
+  {
+    "name": "real command with Bash heredoc is checked",
+    "deny": true,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "git commit -m 'wip' <<'EOF'\nBody\nEOF"}
+    }
+  },
+  {
+    "name": "Bash here-string is not a heredoc",
+    "deny": false,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "cat <<<\"git commit -m wip\""}
+    }
+  },
+  {
+    "name": "CRLF Bash heredoc body is data",
+    "deny": false,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "cat <<'EOF'\r\ngit commit -m 'wip'\r\nEOF\r\n"}
+    }
+  },
+  {
+    "name": "attached short message file invalid",
+    "deny": true,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "powershell",
+      "toolArgs": {"command": "git commit -Fbad.txt"}
+    }
+  },
+  {
+    "name": "attached long message file invalid",
+    "deny": true,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "bash",
+      "toolArgs": {"command": "git commit --file=bad.txt"}
+    }
+  },
+  {
+    "name": "attached short message file valid",
+    "deny": false,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "bash",
+      "toolArgs": {"command": "git commit -Fgood.txt"}
+    }
+  },
+  {
+    "name": "attached long message file valid",
+    "deny": false,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "powershell",
+      "toolArgs": {"command": "git commit --file=good.txt"}
+    }
+  },
+  {
+    "name": "attached message file respects repeated git -C",
+    "deny": true,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "powershell",
+      "toolArgs": {"command": "git -C repo -C sub commit --file=msg.txt"}
+    }
+  },
+  {
+    "name": "Bash cd does not validate wrong relative file",
+    "deny": false,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "bash",
+      "toolArgs": {"command": "cd repo && git commit -F msg.txt"}
+    }
+  },
+  {
+    "name": "PowerShell Set-Location does not validate wrong relative file",
+    "deny": false,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "powershell",
+      "toolArgs": {"command": "Set-Location repo; git commit -F msg.txt"}
+    }
+  },
+  {
+    "name": "unknown directory change skips relative file",
+    "deny": false,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "bash",
+      "toolArgs": {"command": "cd \"$repo\"; git commit -F msg.txt"}
+    }
+  },
+  {
+    "name": "directory change still checks inline message",
+    "deny": true,
+    "payload": {
+      "toolName": "bash",
+      "toolArgs": {"command": "cd repo && git commit -m wip"}
+    }
+  },
+  {
+    "name": "directory change still checks absolute message file",
+    "deny": true,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "powershell",
+      "toolArgs": {"command": "Set-Location repo; git commit -F \"{{CWD}}/bad.txt\""}
+    }
+  },
+  {
+    "name": "absolute git -C restores known message directory",
+    "deny": true,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "bash",
+      "toolArgs": {"command": "cd repo; git -C \"{{CWD}}\" commit -F bad.txt"}
+    }
+  },
+  {
+    "name": "relative git -C after directory change stays uncertain",
+    "deny": false,
+    "payload": {
+      "cwd": "{{CWD}}",
+      "toolName": "bash",
+      "toolArgs": {"command": "cd repo; git -C sub commit -F msg.txt"}
+    }
+  }
+]

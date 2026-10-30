@@ -18,15 +18,36 @@ Skill activation depends on the agent or an explicit request. Independently, a `
 - `gh pr create`, `gh pr edit`, and `gh pr merge` (GitHub and GHE), and `az repos pr create` and `az repos pr update` (Azure DevOps).
 - GitHub and Azure DevOps MCP tools that create or update pull requests or create branches.
 
-The hook loads through plugin installation or the global `hooks` mapping. Its commands resolve the validator from `${PLUGIN_ROOT}` when loaded as a plugin, and from the user-level hooks directory otherwise. Validation does not depend on skill activation.
+The hook loads through plugin installation or the global `hooks` mapping. Plugin commands receive `${PLUGIN_ROOT}` through the `OSKAR_TOOLS_PLUGIN_ROOT` environment value, rather than inserting the path into shell source. For user-level loading, the validator resolves from `$COPILOT_HOME/hooks/scripts`, or `$HOME/.copilot/hooks/scripts` when `COPILOT_HOME` is unset. Validation does not depend on skill activation. No rules are injected at session or subagent startup.
 
-The hook only affects agent tool calls, not commands you run yourself. Messages that cannot be resolved statically, such as `$variable` values, are allowed. `fixup!`, `squash!`, and `amend!` commits are skipped. The script requires PowerShell 7 (`pwsh`) on `PATH`. If the validator fails internally, it allows the call.
+Literal Bash heredoc bodies are treated as data, not commands. Message files support `-F path`, `-Fpath`, `--file path`, and `--file=path`, including repeated relative `git -C` options. After a shell directory change, relative message-file paths are skipped rather than resolved against a potentially incorrect directory; an absolute `git -C` restores a known directory. Inline messages and absolute message-file paths remain checked.
 
-Run the tests with:
+The hook only affects agent tool calls, not commands you run yourself. Messages that cannot be resolved statically, such as `$variable` values, are allowed. `fixup!`, `squash!`, and `amend!` commits are skipped. If the validator fails internally, it allows the call. These are static format checks, not a security boundary or full language detection.
+
+The client selects the `powershell` or `bash` command in `hooks.json`:
+
+| Route | Requirements |
+| --- | --- |
+| PowerShell | PowerShell 7 (`pwsh`) on `PATH` |
+| Bash | Bash 3.2 or later and `jq` on `PATH`; no PowerShell required |
+
+A missing `jq` produces an explicit error. On macOS with Homebrew, install it with `brew install jq`. Git Bash/Cygwin uses `jq --binary` so native `jq.exe` preserves LF output. The Bash scripts parse submitted tool commands as data; they never execute them.
+
+Run the tests for each available runtime from the repository root:
 
 ```powershell
 pwsh -NoProfile -File tests\git-conventions-hooks.tests.ps1
 ```
+
+For Bash, including Git Bash on Windows:
+
+```powershell
+bash (Resolve-Path tests\git-conventions-hooks.tests.sh).Path
+```
+
+Both runners use `tests\git-conventions-cases.json` for shared expected decisions and check packaged hook commands through plugin and personal-hook loading, including paths with spaces and shell metacharacters. Test payloads do not execute Git commands or PR operations.
+
+[Tests](.github/workflows/tests.yml) runs both suites on Windows, Linux, and macOS for every pull request, push to `master`, and manual dispatch. The GitHub-hosted runners provide PowerShell 7, Bash, and jq; Windows uses Git Bash. A failing suite or platform does not cancel the remaining checks.
 
 ## README conventions
 
@@ -178,7 +199,7 @@ See [creating custom agents](https://docs.github.com/en/copilot/how-tos/copilot-
 
 Hooks execute external commands. They are configured in `com.github.copilot\hooks\hooks.json` using the version `1` format in the [hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference). Put scripts in `com.github.copilot\hooks\scripts\`. Plugin hooks expand `${PLUGIN_ROOT}`, but user-level hooks leave it as literal text, so hook commands must also work through the global `hooks` mapping. Follow the fallback in the existing `hooks.json`. Because `preToolUse` command hooks deny the call when they fail, a wrong script path blocks every tool call.
 
-Do not use `.github\hooks` for distributable plugin hooks: that location configures the repository itself.
+Do not use `.github\hooks` for distributable plugin hooks: that location configures the repository itself. Preserve LF endings for Bash and jq files as specified in `.gitattributes`.
 
 Agent Plugins 1.0 fixes these component locations. Do not add legacy `skills`, `agents`, or `hooks` path fields to `plugin.json`. No MCP configuration is needed unless you separately choose to add a server.
 
