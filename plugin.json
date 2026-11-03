@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "oskar-tools",
-  "version": "0.5.0",
-  "description": "Personal Copilot plugin for skills, agents, and hooks.",
+  "version": "0.6.0",
+  "description": "Personal Copilot plugin for conventions, validation hooks, and engineering workflow commands.",
   "author": {
     "name": "OskarKlintrot"
   },

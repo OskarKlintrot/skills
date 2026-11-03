@@ -1,0 +1,42 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Copilot CLI
+        run: npm install --global @github/copilot@1.0.105
+
+      - name: Run convention hook tests
+        run: pwsh -NoProfile -File tests\git-conventions-hooks.tests.ps1
+
+      - name: Run command packaging and runtime tests
+        env:
+          # Discovery only: no model request or Copilot credentials are needed.
+          COPILOT_PROVIDER_BASE_URL: http://127.0.0.1:9/v1
+          COPILOT_PROVIDER_TYPE: openai
+          COPILOT_MODEL: command-tests
+          COPILOT_AUTO_UPDATE: 'false'
+        run: pwsh -NoProfile -File tests\commands.tests.ps1 -Runtime
