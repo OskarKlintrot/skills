@@ -2,7 +2,7 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, and [engineering workflow commands](#engineering-workflow-commands) that use the separately installed Addy agent-skills plugin, and a `hello-world` [dynamic workflow](#dynamic-workflows) that verifies plugin-distributed workflows. These components are available through plugin installation without development mappings. It contains no agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, [engineering workflow commands](#engineering-workflow-commands) that use the separately installed Addy agent-skills plugin, and [dynamic workflows](#dynamic-workflows) for an engineering lifecycle and a no-agent `hello-world` example. These components are available through plugin installation without development mappings. It contains no agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
 
 ## Git conventions
 
@@ -201,6 +201,9 @@ com.github.copilot\
   extensions\
     hello-world\
       extension.mjs
+    lifecycle\
+      extension.mjs
+      workflow.mjs
   hooks\
     hooks.json
     scripts\
@@ -238,6 +241,38 @@ copilot --experimental workflow run hello-world --args '{"name":"Oskar"}'
 ```
 
 It returns `{"greeting":"Hello, Oskar!","source":"oskar-tools plugin"}`. In an interactive session, enable experimental features and ask Copilot to run the `hello-world` dynamic workflow.
+
+#### Engineering lifecycle
+
+`engineering-lifecycle` adapts [Addy's lifecycle](https://skills.addy.ie/) and [`/build auto`](https://github.com/addyosmani/agent-skills/blob/301b02b12bff98e4688e6984af6556802322bbde/.claude/commands/build.md) into one workflow:
+
+**Define -> approve spec -> Plan -> approve plan -> sequential Build loop -> Verify -> parallel Review -> Ship decision.**
+
+This is a custom orchestration, not an upstream `/loop` or `/lifecycle` command. Upstream's lifecycle is user-driven; its build loop executes an approved finite task set. This adaptation uses the same skill dependencies as the command adapters: `spec-driven-development`, `planning-and-task-breakdown`, `incremental-implementation`, `test-driven-development`, `code-review-and-quality`, `security-and-hardening`, and `shipping-and-launch`; build failures also require `debugging-and-error-recovery`. Missing skills stop the affected phase.
+
+After installing the plugin, start an experimental interactive session and ask Copilot:
+
+```text
+Run the engineering-lifecycle dynamic workflow with {"goal":"Describe the feature here"}.
+```
+
+The workflow consumes AI credits. It does not choose models or impose resource ceilings; use the runtime's run limits when needed. It creates a fresh agent context per phase or build task. Build tasks share the worktree and run sequentially in validated dependency order; only the three read-only specialist reviews run in parallel. Each task follows RED -> GREEN -> regression -> build/type/lint checks and records its result in the repository's spec/plan/task artifacts.
+
+The workflow pauses durably at `approve-spec` and `approve-plan`, logging the artifact reports and run ID. Review the files and explicitly tell Copilot to resume that same run **only to approve the exact spec or plan**. Resume is the approval signal, not a separate interactive approval dialog; the coordinator must not resume automatically. Do not edit the approved scope and resume stale output: start a new run for revisions. After plan approval, all tasks run without between-task approval, but agents must stop for ambiguity, conflicting user edits, new high-risk decisions, or failed/missing verification.
+
+The runtime journals agent results across a paused run, so resuming does not re-execute completed phases or tasks. Abrupt interruption during an agent's edits is not a transaction: inspect the worktree and durable task records before recovery. `NO-GO` is a completed assessment result, not a runtime exception or resumable repair loop. Resolve the reported blocker and start a new run; its planning phase must reconcile pending tasks with existing artifacts and current evidence. Runtime cancellation, limit and storage failures propagate to the runtime rather than becoming successful assessments.
+
+Verification and release gates validate structured agent reports, not the underlying truth of model claims. Reports require non-empty evidence; build and integrated verification require actual-command reports with only passing outcomes. Missing specialist reports, Critical/High/Required findings, or a missing rollback plan prevent GO. The ship phase synthesizes the existing code, security and test reviews without another fan-out. Required browser/performance evidence must be reported as unavailable rather than fabricated. A human must still review the evidence before release.
+
+Unlike `/oskar-tools:build`, this workflow leaves all changes **uncommitted**. It never authorizes commits, pushes, merges or deployment; `Ship` means launch-readiness assessment only. Source instructions are composed from skill references and this repository's orchestration policy, not bundled copies of upstream skills.
+
+Run the workflow contract tests without model requests:
+
+```powershell
+node --test tests\lifecycle.tests.mjs
+```
+
+These tests exercise gates, dependency ordering, resume replay, missing reports and failed verification using a simulated workflow context. They do not execute live model tasks.
 
 ### Hooks
 

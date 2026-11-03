@@ -97,6 +97,13 @@ try {
     $installOutput = & copilot plugin install $root 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Isolated plugin installation failed: $installOutput" }
 
+    # Invalid arguments exercise extension loading without invoking any model task.
+    $workflowOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run engineering-lifecycle --args '{}' 2>&1
+    Assert-Check 'Installed lifecycle workflow loads and enforces its argument schema' (
+        $LASTEXITCODE -eq 2 -and
+        ($workflowOutput -join "`n").Contains('Invalid arguments for dynamic workflow "engineering-lifecycle".')
+    )
+
     # PowerShell resolves npm launchers as well as native CLI installations.
     $shellPath = Join-Path $PSHOME $(if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' })
     $start = [System.Diagnostics.ProcessStartInfo]::new($shellPath)
