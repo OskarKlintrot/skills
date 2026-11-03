@@ -2,7 +2,7 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, and [engineering workflow commands](#engineering-workflow-commands) that use the separately installed Addy agent-skills plugin. These components are available through plugin installation without development mappings. It contains no agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, and [engineering workflow commands](#engineering-workflow-commands) that use the separately installed Addy agent-skills plugin, and a `hello-world` [dynamic workflow](#dynamic-workflows) that verifies plugin-distributed workflows. These components are available through plugin installation without development mappings. It contains no agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
 
 ## Git conventions
 
@@ -198,6 +198,9 @@ instructions\
 com.github.copilot\
   agents\
   commands\
+  extensions\
+    hello-world\
+      extension.mjs
   hooks\
     hooks.json
     scripts\
@@ -223,6 +226,18 @@ See [creating custom agents](https://docs.github.com/en/copilot/how-tos/copilot-
 Create `com.github.copilot\commands\<command-name>.md` with YAML `description` frontmatter followed by the prompt instructions. The CLI registers it as `/oskar-tools:<command-name>`. Do not add a `commands` path field to the Agent Plugins 1.0 manifest; the namespaced directory is its fixed Copilot-specific location.
 
 Keep shared engineering workflows in the upstream skills rather than duplicating them in command adapters. Refer to installed skills by their discovered names, not hardcoded cache paths. Document new dependencies and retain upstream attribution when adapting third-party commands. See the [engineering workflow commands](#engineering-workflow-commands) for loading, arguments, and permission boundaries.
+
+### Dynamic workflows
+
+[Dynamic workflows](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/use-dynamic-workflows) are Copilot extensions. Create `com.github.copilot\extensions\<extension-name>\extension.mjs` that registers workflows with `defineWorkflow` and `joinSession` from `@github/copilot-sdk/extension`. The current docs do not list this location for Agent Plugins 1.0; it matches the plugins bundled with the Copilot app. Do not add an `extensions` path field to `plugin.json`; in Agent Plugins 1.0 that field holds namespaced client data, not paths. Extensions run local code, so review them like hooks.
+
+The `hello-world` workflow spawns no subagents and uses no AI credits. Verified with CLI **1.0.105** after an isolated plugin installation:
+
+```powershell
+copilot --experimental workflow run hello-world --args '{"name":"Oskar"}'
+```
+
+It returns `{"greeting":"Hello, Oskar!","source":"oskar-tools plugin"}`. In an interactive session, enable experimental features and ask Copilot to run the `hello-world` dynamic workflow.
 
 ### Hooks
 
