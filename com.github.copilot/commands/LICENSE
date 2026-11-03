@@ -1,3 +1,15 @@
+Attribution scope
+
+These commands are adapted from addyosmani/agent-skills version 0.6.14:
+https://github.com/addyosmani/agent-skills
+
+The copyright notice and MIT license below are retained for the upstream
+material. Copilot adaptations and additional workflow changes were made in
+OskarKlintrot/skills, not by Addy Osmani. Retaining his notice does not attribute
+those changes to him or imply his endorsement.
+
+The original upstream license text follows unchanged.
+
 MIT License
 
 Copyright (c) 2025 Addy Osmani
