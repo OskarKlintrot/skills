@@ -97,13 +97,15 @@ try {
     $installOutput = & copilot plugin install $root 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Isolated plugin installation failed: $installOutput" }
 
-    $start = [System.Diagnostics.ProcessStartInfo]::new('copilot')
+    # PowerShell resolves npm launchers as well as native CLI installations.
+    $shellPath = Join-Path $PSHOME $(if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' })
+    $start = [System.Diagnostics.ProcessStartInfo]::new($shellPath)
     $start.WorkingDirectory = $testHome
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    foreach ($argument in @('--acp', '--no-auto-update', '--disable-builtin-mcps', '--no-custom-instructions')) {
+    foreach ($argument in @('-NoProfile', '-NonInteractive', '-Command', '& copilot --acp --no-auto-update --disable-builtin-mcps --no-custom-instructions')) {
         $start.ArgumentList.Add($argument)
     }
     $process = [System.Diagnostics.Process]::Start($start)
