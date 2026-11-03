@@ -8,6 +8,7 @@ $skills = [ordered]@{
     'build' = 'incremental-implementation'
     'code-simplify' = 'code-simplification'
     'constraints' = 'constraint-driven-development'
+    'lifecycle' = 'spec-driven-development'
     'plan' = 'planning-and-task-breakdown'
     'review' = 'code-review-and-quality'
     'ship' = 'shipping-and-launch'
@@ -35,7 +36,7 @@ Assert-Check 'Agent Plugins 1.0 manifest uses fixed component paths' (
     -not ($manifest.PSObject.Properties.Name | Where-Object { $_ -in @('commands', 'skills', 'agents', 'hooks') })
 )
 $files = @(Get-ChildItem -LiteralPath $directory -Filter '*.md' -File -ErrorAction SilentlyContinue)
-Assert-Check 'Exactly the nine upstream commands are packaged' (
+Assert-Check 'Exactly the ten documented commands are packaged' (
     $files.Count -eq $skills.Count -and
     -not (Compare-Object @($skills.Keys) @($files.BaseName))
 )
@@ -81,6 +82,21 @@ Assert-Check 'Spec preserves its upstream skill commit workflow' (
     $spec.Contains('agent-skills:spec-driven-development') -and
     $spec -notmatch 'Do not commit|does not authorize Git operations|even if the invoked skill recommends committing'
 )
+$lifecycle = Get-Content -LiteralPath (Join-Path $directory 'lifecycle.md') -Raw
+Assert-Check 'Lifecycle prepares requirements in the main conversation with interview terminal gate' (
+    $lifecycle.Contains('agent-skills:interview-me') -and
+    $lifecycle.Contains('`ask_user` in this main conversation') -and
+    $lifecycle.Contains('terminal-turn rule') -and
+    $lifecycle.Contains('Do not write a spec') -and
+    $lifecycle.Contains('same turn as intent confirmation')
+)
+Assert-Check 'Lifecycle passes a prepared spec and routes all worker input to the user' (
+    $lifecycle.Contains('"specPath"') -and
+    $lifecycle.Contains('`needsInput`') -and
+    $lifecycle.Contains('Define, Plan, Build, Verify,') -and
+    $lifecycle.Contains('Review and Ship') -and
+    $lifecycle.Contains('Do not auto-approve.')
+)
 
 if ($failures) { throw "$failures command checks failed." }
 if (-not $Runtime) { return }
@@ -98,10 +114,17 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Isolated plugin installation failed: $installOutput" }
 
     # Invalid arguments exercise extension loading without invoking any model task.
-    $workflowOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run engineering-lifecycle --args '{}' 2>&1
+    $workflowOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run engineering-lifecycle --args '{"goal":"A goal without a prepared spec"}' 2>&1
     Assert-Check 'Installed lifecycle workflow loads and enforces its argument schema' (
         $LASTEXITCODE -eq 2 -and
         ($workflowOutput -join "`n").Contains('Invalid arguments for dynamic workflow "engineering-lifecycle".')
+    )
+    $preflightOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run engineering-lifecycle --args '{"goal":"Preflight only","specPath":"tests\\fixtures\\nonexistent-lifecycle-spec.md"}' 2>&1
+    Assert-Check 'Installed workflow rejects a missing spec without spawning model tasks' (
+        $LASTEXITCODE -eq 0 -and
+        ($preflightOutput -join "`n").Contains('"verdict":"NO-GO"') -and
+        ($preflightOutput -join "`n").Contains('"reports":{}') -and
+        ($preflightOutput -join "`n").Contains('Cannot read specPath (ENOENT)')
     )
 
     # PowerShell resolves npm launchers as well as native CLI installations.

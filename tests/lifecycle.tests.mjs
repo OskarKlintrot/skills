@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import { test } from "node:test";
 import { lifecycle } from "../com.github.copilot/extensions/lifecycle/workflow.mjs";
 
 const check = { command: "npm test", outcome: "passed", evidence: "All tests passed" };
 const task = (id, dependsOn = []) => ({ id, title: id, acceptance: "Works", dependsOn });
 const report = (extra = {}) => ({
-    status: "ready", summary: "Ready", evidence: ["SPEC.md"], checks: [check], ...extra,
+    status: "ready", summary: "Ready", evidence: ["SPEC.md"], checks: [check], questions: [], ...extra,
 });
 const responses = () => ({
     Define: report(),
@@ -19,7 +21,9 @@ const responses = () => ({
     Ship: report({ verdict: "GO", rollback: "Revert the release and verify health" }),
 });
 
-function harness(overrides = {}, args = { goal: "Build a feature" }) {
+function harness(overrides = {}, args = {
+    goal: "Build a feature", specPath: join("tests", "fixtures", "lifecycle-spec.md"),
+}) {
     const answers = { ...responses(), ...overrides };
     const journal = new Map();
     const checkpoints = new Set();
@@ -30,11 +34,12 @@ function harness(overrides = {}, args = { goal: "Build a feature" }) {
         args, runId: "test-run", log: (text) => logs.push(text),
         phase: (name) => phases.push(name),
         async agent(prompt, options) {
-            if (journal.has(options.label)) return journal.get(options.label);
+            const key = JSON.stringify({ prompt, options });
+            if (journal.has(key)) return journal.get(key);
             calls.push({ prompt, ...options });
             const value = answers[options.label];
             assert.notEqual(value, undefined, `Unexpected agent ${options.label}`);
-            journal.set(options.label, value);
+            journal.set(key, value);
             return value;
         },
         async pause(key) {
@@ -44,6 +49,10 @@ function harness(overrides = {}, args = { goal: "Build a feature" }) {
             }
         },
         parallel: (thunks) => Promise.all(thunks.map((thunk) => thunk())),
+        async step(key, producer) {
+            if (!journal.has(key)) journal.set(key, await producer());
+            return journal.get(key);
+        },
     };
     return { ctx, calls, phases, logs };
 }
@@ -78,6 +87,86 @@ test("invalid arguments fail before spawning agents", async () => {
         await assert.rejects(() => lifecycle.run(h.ctx), /goal/);
         assert.equal(h.calls.length, 0);
     }
+});
+
+test("a goal alone cannot start unattended requirements discovery", async () => {
+    const h = harness({}, { goal: "Build a feature" });
+    await assert.rejects(() => lifecycle.run(h.ctx), /specPath/);
+    assert.equal(h.calls.length, 0);
+    assert.ok(lifecycle.meta.argsSchema.required.includes("specPath"));
+});
+
+test("missing spec files, directories and paths outside the worktree stop before any phase agent", async () => {
+    for (const specPath of [join("tests", "fixtures", "missing-spec.md"), ".", ".."]) {
+        const h = harness({}, { goal: "Build a feature", specPath });
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.equal(h.calls.length, 0);
+        assert.match(result.reason, /spec/i);
+    }
+});
+
+test("empty or changed spec cannot bypass preparation or reuse stale approval", async () => {
+    const directory = await mkdtemp(resolve("tests", "fixtures", "lifecycle-"));
+    const path = join(directory, "SPEC.md");
+    const args = { goal: "Build a feature", specPath: relative(process.cwd(), path) };
+    try {
+        await writeFile(path, " ");
+        const empty = harness({}, args);
+        assert.equal((await lifecycle.run(empty.ctx)).verdict, "NO-GO");
+        assert.equal(empty.calls.length, 0);
+        await writeFile(path, await readFile(join("tests", "fixtures", "lifecycle-spec.md")));
+        const h = harness({}, args);
+        await approveSpec(h);
+        await writeFile(path, "# Changed scope after approval");
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.match(result.reason, /Spec changed/);
+        assert.deepEqual(h.calls.map((c) => c.label), ["Define"]);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("every phase routes unanswered questions to the main session without advancing", async () => {
+    for (const phase of Object.keys(responses())) {
+        const base = responses()[phase];
+        const h = harness({
+            [phase]: { ...base, questions: ["Which retention period should apply?"] },
+        });
+        if (phase === "Plan") {
+            await approveSpec(h);
+        } else if (phase !== "Define") {
+            await approvePlan(h);
+        }
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO", phase);
+        assert.deepEqual(result.needsInput, [{
+            phase, question: "Which retention period should apply?",
+        }]);
+        if (!phase.startsWith("Review:")) assert.equal(h.calls.at(-1).label, phase);
+        else assert.equal(h.calls.some((c) => c.label === "Ship"), false);
+    }
+});
+
+test("all phase prompts prohibit interactive skills and hand questions back", async () => {
+    const h = harness();
+    await approvePlan(h);
+    await lifecycle.run(h.ctx);
+    for (const call of h.calls) {
+        assert.match(call.prompt, /Do not call ask_user/);
+        assert.match(call.prompt, /Do not invoke.*interview-me/);
+        assert.match(call.prompt, /questions/);
+        assert.ok(call.schema.required.includes("questions"));
+    }
+    assert.match(h.calls.find((c) => c.label === "Define").prompt, /Read-only/);
+    assert.doesNotMatch(h.calls.find((c) => c.label === "Define").prompt, /Clarify the goal using available user-input/);
+    assert.match(h.calls.find((c) => c.label === "Plan").prompt, /Do not wait/);
+    assert.match(h.calls.find((c) => c.label === "Verify").prompt, /assessment only/i);
+    assert.match(h.calls.find((c) => c.label === "Verify").prompt, /Do not fix code/);
+    assert.match(h.calls.find((c) => c.label === "Review:tests").prompt, /do not run builds\/tests/i);
+    assert.match(h.calls.find((c) => c.label === "Ship").prompt, /assessment only/i);
+    assert.match(h.calls.find((c) => c.label === "Ship").prompt, /Do not run deployment or rollback commands/);
 });
 
 test("missing spec output stops closed", async () => {

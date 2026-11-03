@@ -38,7 +38,7 @@ Plugin installation needs no global directory mappings. For local development, t
 
 ## Engineering workflow commands
 
-`com.github.copilot\commands\*.md` contains nine Copilot CLI command adapters based on the `.claude\commands` files shipped with [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), version `0.6.14`. `com.github.copilot\commands\LICENSE` retains the unchanged upstream MIT license and copyright notice, with a separate attribution clarification. That notice identifies the upstream material; the Copilot adaptations and additional workflow changes belong to this repository's history and are not attributed to or endorsed by Addy Osmani.
+`com.github.copilot\commands\*.md` contains nine Copilot CLI command adapters based on the `.claude\commands` files shipped with [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), version `0.6.14`, plus a local `lifecycle` coordinator command. `com.github.copilot\commands\LICENSE` retains the unchanged upstream MIT license and copyright notice, with a separate attribution clarification. That notice identifies the upstream material; the Copilot adaptations and additional workflow changes belong to this repository's history and are not attributed to or endorsed by Addy Osmani.
 
 The commands use skills from the separately installed, enabled `agent-skills` plugin; they do not bundle or install those skills. If a required skill is unavailable, the command reports the missing dependency and stops. Install the dependency if needed:
 
@@ -53,6 +53,7 @@ Copilot registers plugin commands with the plugin name as a prefix. Use the full
 | Command | Workflow |
 | --- | --- |
 | `/oskar-tools:spec <feature>` | Clarify requirements and write a spec using `spec-driven-development`. |
+| `/oskar-tools:lifecycle <feature or spec>` | Prepare requirements with the user in the main conversation, then coordinate the engineering lifecycle dynamic workflow and its approval gates. |
 | `/oskar-tools:plan <scope>` | Break the spec into tasks using `planning-and-task-breakdown`; no implementation. |
 | `/oskar-tools:build [auto\|all]` | Implement the next task, or the approved whole plan, using `incremental-implementation` and `test-driven-development`. |
 | `/oskar-tools:test <feature or bug>` | Run TDD or the Prove-It bug-fix workflow using `test-driven-development`. |
@@ -62,7 +63,7 @@ Copilot registers plugin commands with the plugin name as a prefix. Use the full
 | `/oskar-tools:webperf <URL, report, or scope>` | Audit browser-facing performance using `performance-optimization`; distinguish measured Deep mode from unmeasured Quick mode. |
 | `/oskar-tools:ship <scope>` | Assess launch readiness using `shipping-and-launch`; produce specialist findings, a GO/NO-GO decision, and a rollback plan, not a deployment. |
 
-Arguments follow the command in chat. `/oskar-tools:build` includes a commit after each verified task; `build auto` also commits newly generated planning documents separately after plan approval. `/oskar-tools:spec` follows the upstream skill's instruction to commit the spec. These workflows do not switch Copilot's runtime mode or bypass tool permissions and repository instructions. Other commands retain their stated Git authorization boundaries; build does not authorize pushing, merging, or deploying.
+Arguments follow the command in chat. `/oskar-tools:build` includes a commit after each verified task; `build auto` also commits newly generated planning documents separately after plan approval. `/oskar-tools:spec` follows the upstream skill's instruction to commit the spec. `/oskar-tools:lifecycle` leaves the spec and all subsequent changes uncommitted. These workflows do not switch Copilot's runtime mode or bypass tool permissions and repository instructions. Other commands retain their stated Git authorization boundaries; build does not authorize pushing, merging, or deploying.
 
 The adapters use Copilot instruction sources, installed skill names, and available question/delegation tools rather than Claude-specific frontmatter, instruction paths, or agent APIs. `ship` uses three independent specialist subagents when supported. `webperf` uses a discovered performance agent or an available general-purpose subagent. Neither assumes that Addy's plugin registers its agent definitions; if delegation is unavailable, the commands explicitly label a direct single-context assessment. Live browser checks require suitable configured tools, such as Chrome DevTools MCP, and unavailable measurement evidence is reported rather than invented.
 
@@ -246,19 +247,27 @@ It returns `{"greeting":"Hello, Oskar!","source":"oskar-tools plugin"}`. In an i
 
 `engineering-lifecycle` adapts [Addy's lifecycle](https://skills.addy.ie/) and [`/build auto`](https://github.com/addyosmani/agent-skills/blob/301b02b12bff98e4688e6984af6556802322bbde/.claude/commands/build.md) into one workflow:
 
-**Define -> approve spec -> Plan -> approve plan -> sequential Build loop -> Verify -> parallel Review -> Ship decision.**
+**Interactive requirements and spec in the main conversation -> Define (validate spec) -> approve spec -> Plan -> approve plan -> sequential Build loop -> Verify -> parallel Review -> Ship decision.**
 
-This is a custom orchestration, not an upstream `/loop` or `/lifecycle` command. Upstream's lifecycle is user-driven; its build loop executes an approved finite task set. This adaptation uses the same skill dependencies as the command adapters: `spec-driven-development`, `planning-and-task-breakdown`, `incremental-implementation`, `test-driven-development`, `code-review-and-quality`, `security-and-hardening`, and `shipping-and-launch`; build failures also require `debugging-and-error-recovery`. Missing skills stop the affected phase.
+This is a custom orchestration, not a `/loop` or `/lifecycle` command from the original Addy project. That project's lifecycle is user-driven; its build loop executes an approved finite task set. This adaptation uses the same skill dependencies as the command adapters: `spec-driven-development`, `planning-and-task-breakdown`, `incremental-implementation`, `test-driven-development`, `code-review-and-quality`, `security-and-hardening`, and `shipping-and-launch`; build failures also require `debugging-and-error-recovery`. Unclear intent also requires `interview-me` during interactive preparation. Missing skills stop the affected phase.
 
-After installing the plugin, start an experimental interactive session and ask Copilot:
+After installing the plugin, start an experimental interactive session and use:
 
 ```text
-Run the engineering-lifecycle dynamic workflow with {"goal":"Describe the feature here"}.
+/oskar-tools:lifecycle Describe the feature here
 ```
 
-The workflow consumes AI credits. It does not choose models or impose resource ceilings; use the runtime's run limits when needed. It creates a fresh agent context per phase or build task. Build tasks share the worktree and run sequentially in validated dependency order; only the three read-only specialist reviews run in parallel. Each task follows RED -> GREEN -> regression -> build/type/lint checks and records its result in the repository's spec/plan/task artifacts.
+The command keeps `ask_user`, any `interview-me` dialogue, capability-map approval and spec writing in the main conversation. Interview confirmation ends that turn before specification proceeds. The user must approve the actual spec, not just its intent. If no interactive input is available, preparation stops. The workflow never relies on a worker having access to a human-input tool.
 
-The workflow pauses durably at `approve-spec` and `approve-plan`, logging the artifact reports and run ID. Review the files and explicitly tell Copilot to resume that same run **only to approve the exact spec or plan**. Resume is the approval signal, not a separate interactive approval dialog; the coordinator must not resume automatically. Do not edit the approved scope and resume stale output: start a new run for revisions. After plan approval, all tasks run without between-task approval, but agents must stop for ambiguity, conflicting user edits, new high-risk decisions, or failed/missing verification.
+Direct workflow invocation requires both `goal` and `specPath`, for example `{"goal":"Add search","specPath":"SPEC.md"}`. Prepare and review that spec with the user first. `specPath` must identify a non-empty file inside the current worktree; a goal alone is rejected before spawning agents. Define validates the existing spec read-only instead of starting another interview. The runtime snapshots its content; edits between attempts stop the run before cached spec approval can be reused. New scope requires a new run.
+
+The workflow consumes AI credits. It does not choose models or impose resource ceilings; use the runtime's run limits when needed. It creates a fresh agent context per phase or build task. Build tasks share the worktree and run sequentially in validated dependency order; only the three read-only specialist reviews run in parallel. Each task follows RED -> GREEN -> regression -> build/type/lint checks and records its result in the repository's plan/task artifacts.
+
+The workflow pauses durably at `approve-spec` and `approve-plan`, logging the artifact reports and run ID. The main conversation reviews the files and obtains explicit approval before resuming the exact run; an earlier explicit approval can cover the same unchanged spec. The runtime checkpoint itself is a resume signal, not a user-approval dialog. Pausing or a worker's claim of approval is not authorization. Do not edit the approved scope and resume stale output: start a new run for revisions. After plan approval, all tasks run without between-task approval, but agents must stop for ambiguity, conflicting user edits, new high-risk decisions, or failed/missing verification.
+
+All workers are instructed to be non-interactive: no `ask_user`, interviews, nested delegation or waiting for human approval. A decision needed in any phase returns a blocked report with `questions`; the workflow stops with `NO-GO` and aggregates them into `needsInput`, even if the worker incorrectly reports ready. `/oskar-tools:lifecycle` routes those questions to the user one at a time in the main conversation, records decisions in the relevant artifacts and obtains renewed approval for changed scope. These are agent instructions and report gates, not a sandbox that removes tools from workers.
+
+Plan produces artifacts without waiting internally for its skill's human-review step; `approve-plan` is that gate. Verify uses test guidance for assessment only, without entering TDD implementation or changing snapshots/dependencies. Review consumes Verify evidence without running concurrent builds/tests or applying fixes. Ship uses the existing specialist reports for assessment only, without executing the skill's deployment, feature-flag or rollback procedures. Human decisions in any of these steps are returned to the main conversation rather than delegated to another worker.
 
 The runtime journals agent results across a paused run, so resuming does not re-execute completed phases or tasks. Abrupt interruption during an agent's edits is not a transaction: inspect the worktree and durable task records before recovery. `NO-GO` is a completed assessment result, not a runtime exception or resumable repair loop. Resolve the reported blocker and start a new run; its planning phase must reconcile pending tasks with existing artifacts and current evidence. Runtime cancellation, limit and storage failures propagate to the runtime rather than becoming successful assessments.
 
@@ -272,7 +281,7 @@ Run the workflow contract tests without model requests:
 node --test tests\lifecycle.tests.mjs
 ```
 
-These tests exercise gates, dependency ordering, resume replay, missing reports and failed verification using a simulated workflow context. They do not execute live model tasks.
+These tests exercise spec preparation, changed-spec rejection, question handoff in every phase, dependency ordering, resume replay, missing reports and failed verification using a simulated workflow context and fixture files. `tests\commands.tests.ps1 -Runtime` also checks installed command registration, rejection of a goal-only invocation, and a real missing-spec preflight with no agents or model requests. Neither check proves live model compliance with the instructions.
 
 ### Hooks
 
