@@ -77,9 +77,9 @@ Assert-Check 'Build records completion before its required task commit' (
     $build -notmatch 'optional authorized commit|If explicitly authorized to commit|only if commits were explicitly authorized'
 )
 $spec = Get-Content -LiteralPath (Join-Path $directory 'spec.md') -Raw
-Assert-Check 'Spec approval does not authorize commits recommended by its skill' (
-    $spec.Contains('Do not commit or push unless explicitly authorized') -and
-    $spec.Contains('even if the invoked skill recommends committing the spec')
+Assert-Check 'Spec preserves its upstream skill commit workflow' (
+    $spec.Contains('agent-skills:spec-driven-development') -and
+    $spec -notmatch 'Do not commit|does not authorize Git operations|even if the invoked skill recommends committing'
 )
 
 if ($failures) { throw "$failures command checks failed." }
