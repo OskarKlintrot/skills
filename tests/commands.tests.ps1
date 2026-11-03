@@ -70,9 +70,11 @@ Assert-Check 'Build preserves the working-tree and index baseline in both modes'
     $build.Contains('Before editing in either mode') -and $build.Contains('git diff --cached') -and
     $build.Contains("preserving the user's index and working tree")
 )
-Assert-Check 'Build records completion before its optional commit' (
-    $build -match '7\. Record the verified task''s completion[\s\S]*8\. If explicitly authorized to commit' -and
-    $build.Contains('build -> record completion -> optional authorized commit')
+Assert-Check 'Build records completion before its required task commit' (
+    $build -match '7\. Record the verified task''s completion[\s\S]*8\. Commit ' -and
+    $build.Contains('build -> record completion -> commit') -and
+    $build.Contains('Every task still earns verification and its own commit.') -and
+    $build -notmatch 'optional authorized commit|If explicitly authorized to commit|only if commits were explicitly authorized'
 )
 $spec = Get-Content -LiteralPath (Join-Path $directory 'spec.md') -Raw
 Assert-Check 'Spec approval does not authorize commits recommended by its skill' (
