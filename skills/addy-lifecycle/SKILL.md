@@ -98,7 +98,14 @@ Persist relevant answers in the spec or existing plan/task artifacts, preserving
 unrelated work, and get renewed approval when scope or the plan changes. A completed
 NO-GO result is not resumable: start a new run after the blocker is resolved. Its
 plan must reconcile completed tasks and current evidence rather than repeat work
-blindly. Runtime-paused/error runs may be resumed only after inspecting their actual
+blindly. Plan returns pending `tasks` and `completed` entries shaped as `{ task, report }`.
+Carried reports require passing acceptance and Git verification evidence with a full,
+reachable commit ID for the current approved scope; checkboxes alone are not evidence.
+Pending tasks may reference completed prerequisites. If no implementation remains,
+an empty pending list with validated completed entries allows assessment-only recovery:
+keep both approval/commit gates, skip Build agents and run fresh Verify, Review and Ship.
+An initial plan with neither pending nor validated completed work is still invalid.
+Runtime-paused/error runs may be resumed only after inspecting their actual
 status and approved scope; do not blindly retry cancelled runs or partially edited tasks.
 
 Review final verification and specialist findings with the user. GO means a

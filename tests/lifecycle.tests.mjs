@@ -13,7 +13,7 @@ const report = (extra = {}) => ({
 const responses = () => ({
     Define: report(),
     "Commit:spec": report({ commit }),
-    Plan: report({ tasks: [task("second", ["first"]), task("first")] }),
+    Plan: report({ tasks: [task("second", ["first"]), task("first")], completed: [] }),
     "Commit:plan": report({ commit }),
     "Build:first": report({ commit }),
     "Build:second": report({ commit }),
@@ -212,12 +212,75 @@ test("invalid dependency graphs never reach the plan approval gate", async () =>
         [task("a", ["b"]), task("b", ["a"])], [task("a", ["a"])],
         [task("../bad")], [task("a", ["b", "b"]), task("b")],
     ]) {
-        const h = harness({ Plan: report({ tasks }) });
+        const h = harness({ Plan: report({ tasks, completed: [] }) });
         await approveSpec(h);
         const result = await lifecycle.run(h.ctx);
         assert.equal(result.verdict, "NO-GO");
         assert.equal(result.phase, "Plan");
         assert.equal(h.calls.length, 3);
+    }
+});
+
+test("a fresh recovery run uses completed prerequisites without rebuilding them", async () => {
+    const completed = [{ task: task("first"), report: report({ commit }) }];
+    const h = harness({ Plan: report({ tasks: [task("second", ["first"])], completed }) });
+    await approvePlan(h);
+    assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+    const planning = h.calls.find((c) => c.label === "Plan");
+    assert.ok(planning.schema.required.includes("completed"));
+    assert.match(planning.prompt, /verify its commit exists/);
+    assert.equal(h.calls.some((c) => c.label === "Build:first"), false);
+    for (const label of ["Build:second", "Verify", "Review:code", "Ship"]) {
+        const context = JSON.parse(h.calls.find((c) => c.label === label).prompt.split("Context (JSON):\n")[1]);
+        assert.deepEqual(context.completed[0], completed[0]);
+    }
+});
+
+test("recovery after post-build NO-GO can reassess without new Build calls", async () => {
+    const initial = harness({ Verify: report({ status: "blocked" }) });
+    await approvePlan(initial);
+    const stopped = await lifecycle.run(initial.ctx);
+    assert.equal(stopped.phase, "Verify");
+    const completed = [
+        { task: task("first"), report: stopped.reports["Build:first"] },
+        { task: task("second", ["first"]), report: stopped.reports["Build:second"] },
+    ];
+    const h = harness({ Plan: report({ tasks: [], completed }) });
+    await approvePlan(h);
+    assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+    assert.equal(h.calls.some((c) => c.label.startsWith("Build:")), false);
+    assert.ok(h.calls.some((c) => c.label === "Commit:plan"));
+    const context = JSON.parse(h.calls.find((c) => c.label === "Verify").prompt.split("Context (JSON):\n")[1]);
+    assert.deepEqual(context.completed, completed);
+});
+
+test("invalid completed work cannot bypass the plan gate", async () => {
+    const done = (id = "first", dependsOn = [], extra = {}) => ({
+        task: task(id, dependsOn), report: report({ commit, ...extra }),
+    });
+    for (const plan of [
+        { tasks: [], completed: [] },
+        { tasks: [], completed: [done("first", [], { commit: "" })] },
+        { tasks: [], completed: [done("first", [], { checks: [] })] },
+        { tasks: [], completed: [done("first", [], { checks: [{ ...check, outcome: "failed" }] })] },
+        { tasks: [], completed: [done("first", [], { status: "blocked" })] },
+        { tasks: [], completed: [done("first", [], { questions: ["Which scope?"] })] },
+        { tasks: [], completed: [done("first", ["missing"])] },
+        { tasks: [], completed: [done(), done()] },
+        { tasks: [], completed: [done("first", ["second"]), done("second", ["first"])] },
+        { tasks: [task("first")], completed: [done()] },
+        { tasks: [task("second")], completed: [done("first", ["second"])] },
+        { tasks: [], completed: [null] },
+        { tasks: [], completed: [{ task: null, report: report({ commit }) }] },
+        { tasks: [], completed: null },
+        { tasks: [task("first")] },
+    ]) {
+        const h = harness({ Plan: report(plan) });
+        await approveSpec(h);
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.phase, "Plan");
+        assert.equal(result.verdict, "NO-GO");
+        assert.equal(h.calls.at(-1).label, "Plan");
     }
 });
 

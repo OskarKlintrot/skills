@@ -374,7 +374,7 @@ Resumption requires explicit approval of the exact spec. An earlier approval may
 
 ###### 5. Produce the plan and tasks
 
-Plan creates both the plan and task list at repository-standard paths, defaulting to `tasks\plan.md` and `tasks\todo.md`. It also returns a structured `tasks` array in its report:
+Plan creates both the plan and task list at repository-standard paths, defaulting to `tasks\plan.md` and `tasks\todo.md`. It also returns a structured pending `tasks` array and a `completed` array in its report. Every task has these fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -383,13 +383,15 @@ Plan creates both the plan and task list at repository-standard paths, defaultin
 | `acceptance` | Concrete acceptance criteria, including verification instructions. |
 | `dependsOn` | Explicit prerequisite task IDs; do not infer dependencies from list order. |
 
-The workflow validates this report and orders tasks by dependencies. **Build consumes the report's `tasks` array, not unchecked lines discovered independently in the task file.** The files are durable planning/status artifacts; the journaled report controls this run's execution.
+The workflow validates this report and orders tasks by dependencies. **Build consumes the report's pending `tasks` array, not unchecked lines discovered independently in the task file.** The files are durable planning/status artifacts; the journaled report controls this run's execution.
+
+For an initial plan, `completed` is empty. Recovery can carry completed entries shaped as `{ task, report }`, with the full task definition and a ready report containing `summary`, `evidence`, passing `checks`, empty `questions` and a full `commit` ID. Plan must check current acceptance evidence, approved scope, commit reachability and exact scope against Git and durable artifacts, not just trust old checkboxes or reports. As with Build commits, the runtime validates report shape and evidence gates; it does not independently execute the Git checks. Pending tasks may depend on validated completed task IDs. IDs must be unique across both arrays, and completed tasks may depend only on other completed tasks.
 
 ```mermaid
 flowchart TD
     plan["Plan agent reads the approved spec"] --> files["Write plan and task-list artifacts"]
     files --> report["Return a structured report containing tasks"]
-    report --> graph{"Non-empty valid dependency graph?"}
+    report --> graph{"Valid graph with pending or verified completed work?"}
     graph -->|No| blocked(["NO-GO: blocked or invalid plan"])
     graph -->|Yes| pause["Pause at approve-plan"]
     pause --> present["Main conversation presents the complete plan"]
@@ -403,7 +405,7 @@ flowchart TD
     saved -->|Yes| proceed["Continue to stage 6"]
 ```
 
-Duplicate IDs, missing prerequisites, cycles and an empty pending-task set all stop before the approval checkpoint. Plan itself never waits for a human: `approve-plan` is the workflow's human-review boundary.
+Duplicate IDs, missing prerequisites, cycles, invalid completed reports, and a plan with neither pending nor validated completed work stop before the approval checkpoint. Plan itself never waits for a human: `approve-plan` is the workflow's human-review boundary.
 
 After approval, a separate `Commit:plan` agent commits only the approved planning artifacts, without changing their content or implementing tasks. A verified commit is required to continue to stage 6; failure returns NO-GO. This commit is separate from task implementation commits.
 
@@ -415,7 +417,10 @@ The workflow visits the approved finite task set in dependency order. A fresh Bu
 
 ```mermaid
 flowchart TD
-    task["Select the next task whose prerequisites are complete"] --> agent["Start a fresh Build agent for this task"]
+    pending{"Pending tasks?"}
+    pending -->|No, assessment-only recovery| assess["Continue to stage 7 with validated completed reports"]
+    pending -->|Yes| task["Select the next task whose prerequisites are complete"]
+    task --> agent["Start a fresh Build agent for this task"]
     agent --> red["RED: demonstrate the missing behavior with a failing test"]
     red --> green["GREEN: implement this task"]
     green --> checks["Run regression, build and applicable type/lint checks"]
@@ -503,7 +508,7 @@ flowchart TD
     ready -->|No| stop(["Stop and preserve work and reports"])
 ```
 
-NO-GO is a successfully returned assessment result, not a resumable repair loop. A new run must reconcile completed tasks, pending work and current evidence rather than blindly repeat implementation.
+NO-GO is a successfully returned assessment result, not a resumable repair loop. A new run must reconcile completed tasks, pending work and current evidence rather than blindly repeat implementation. Validated completed reports are carried into subsequent Build, Verify, Review and Ship contexts. If all tasks are already complete, an empty pending list with validated completed evidence allows assessment-only recovery: both spec/plan approval and commit gates remain, no Build agent runs, and integrated verification and assessments run afresh. Stale evidence or remaining code fixes require pending repair tasks rather than claiming completion.
 
 Runtime exceptions, cancellation, storage failures and resource-limit failures are separate from NO-GO. Inspect the actual runtime status, worktree, index, commit history and durable task records before deciding whether resumption is supported and safe. A resumed run replays journaled agent results; partially edited tasks and commits are not transactions, and interrupted side effects may need reconciliation. If a commit succeeded before a crash but its report was not saved, inspect and reuse that exact reachable commit rather than blindly committing again. Never treat a generic resume as approval of new scope, risks or permissions.
 

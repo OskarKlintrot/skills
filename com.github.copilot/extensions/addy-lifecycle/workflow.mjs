@@ -53,27 +53,32 @@ const committed = (report) => verified(report) && typeof report.commit === "stri
     /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(report.commit);
 const blocking = new Set(["Critical", "High", "Required"]);
 
-function orderTasks(tasks) {
-    if (!Array.isArray(tasks) || !tasks.length) return null;
+function orderTasks(tasks, completed) {
+    if (!Array.isArray(tasks) || !Array.isArray(completed) ||
+        (!tasks.length && !completed.length) ||
+        completed.some((entry) => !entry || !committed(entry.report))) return null;
+    const allTasks = [...completed.map((entry) => entry.task), ...tasks];
     const ids = new Set();
-    for (const task of tasks) {
-        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(task.id) ||
+    for (const task of allTasks) {
+        if (!task || !nonempty(task.id) || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(task.id) ||
             ids.has(task.id) || !nonempty(task.title) || !nonempty(task.acceptance) ||
             !Array.isArray(task.dependsOn) ||
             new Set(task.dependsOn).size !== task.dependsOn.length) return null;
         ids.add(task.id);
     }
-    if (tasks.some((task) => task.dependsOn.some((id) => !ids.has(id)))) return null;
+    if (allTasks.some((task) => task.dependsOn.some((id) => !ids.has(id)))) return null;
+    const completedIds = new Set(completed.map((entry) => entry.task.id));
+    if (completed.some((entry) => entry.task.dependsOn.some((id) => !completedIds.has(id)))) return null;
     const ordered = [];
     const done = new Set();
-    while (ordered.length < tasks.length) {
-        const next = tasks.find((task) => !done.has(task.id) &&
+    while (ordered.length < allTasks.length) {
+        const next = allTasks.find((task) => !done.has(task.id) &&
             task.dependsOn.every((id) => done.has(id)));
         if (!next) return null;
         ordered.push(next);
         done.add(next.id);
     }
-    return ordered;
+    return ordered.filter((task) => !completedIds.has(task.id));
 }
 
 const boundaries = `
@@ -232,12 +237,32 @@ export const lifecycle = {
             "No implementation. Return all pending thin vertical tasks with unique kebab-case ids, explicit " +
             "dependsOn ids, and concrete acceptance criteria including exact verification commands. " +
             "Represent every prerequisite explicitly; do not infer dependencies from list order. " +
+            "Reconcile prior runs using durable task records, approved scope, the baseline and Git history. " +
+            "Return completed: [] for a new plan. For already verified and committed tasks, return " +
+            "completed entries shaped as { task, report }, using the same task fields and a ready report " +
+            "with summary, evidence, checks, questions and full commit ID. Validate each carried task's " +
+            "acceptance evidence against the current approved scope and verify its commit exists, is " +
+            "reachable from HEAD and contains the intended change without unrelated edits. Cite actual " +
+            "Git commands and output; do not trust a checkbox or old ready claim. Invalid or unavailable " +
+            "evidence means blocked. Completed tasks may depend only on other completed tasks. " +
+            "Do not repeat completed tasks in pending tasks. An empty pending task set is allowed only " +
+            "with validated completed entries covering the implemented scope for assessment-only recovery. " +
+            "If evidence is stale or source corrections remain, return the required pending repair tasks. " +
             "The entire finite task set will run sequentially after one plan approval, without between-task " +
             "human checkpoints. Identify high-risk tasks requiring additional sign-off as blocked. " +
             "Include the plan/task paths and required verification commands in the report.",
-            { goal: ctx.args.goal, spec }, schema({ tasks: { type: "array", items: taskSchema } }));
-        const tasks = evidenced(plan) ? orderTasks(plan.tasks) : null;
-        if (!tasks) return stop("Plan", "Plan blocked or task graph empty, invalid, duplicated, or cyclic.");
+            { goal: ctx.args.goal, spec }, schema({
+                tasks: { type: "array", items: taskSchema },
+                completed: {
+                    type: "array", items: {
+                        type: "object",
+                        properties: { task: taskSchema, report: schema({ commit: text }) },
+                        required: ["task", "report"], additionalProperties: false,
+                    },
+                },
+            }));
+        const tasks = evidenced(plan) ? orderTasks(plan.tasks, plan.completed) : null;
+        if (!tasks) return stop("Plan", "Plan blocked, task graph invalid or empty without verified completed work.");
         await approve("approve-plan", plan);
         const planCommit = await agent("Commit:plan", ["git-workflow-and-versioning"],
             "The exact plan and task list have been explicitly approved. Commit only these planning " +
@@ -247,7 +272,7 @@ export const lifecycle = {
         if (!committed(planCommit)) return stop("Commit:plan", "Approved plan commit missing, failed, or unverified.");
 
         ctx.phase("Build");
-        const completed = [];
+        const completed = [...plan.completed];
         for (const task of tasks) {
             const result = await agent(`Build:${task.id}`,
                 ["incremental-implementation", "test-driven-development", "git-workflow-and-versioning"],
