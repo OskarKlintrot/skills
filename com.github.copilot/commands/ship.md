@@ -18,7 +18,7 @@ Use Copilot's available subagent/delegation tool to launch three independent rev
 2. **Security auditor** - Invoke `agent-skills:security-and-hardening` and inspect OWASP Top 10, secrets handling, auth/authz, and available dependency vulnerability evidence. Return severity, confidence, file:line evidence, and remediations. Never print credentials.
 3. **Test engineer** - Invoke `agent-skills:test-driven-development` for test strategy and analyze coverage of happy paths, edge cases, error paths, and concurrency. Return gaps, supporting test/file references, and actual verification results or checks not run. Do not implement tests or fixes during this assessment.
 
-Use a matching custom agent only if Copilot actually exposes it; otherwise use an available general-purpose subagent with the role instructions above. Skills installed from the Addy plugin do not imply that its specialist agents are registered.
+Prefer the discovered `oskar-tools:code-reviewer`, `oskar-tools:security-auditor` and `oskar-tools:test-engineer` personas for their respective roles. Use a matching custom agent only if Copilot actually exposes it; otherwise use an available general-purpose subagent with the role instructions above. This plugin packages those personas; skills installed from the Addy plugin alone do not imply that specialist agents are registered.
 
 Give each subagent a complete, bounded assignment: exact scope, relevant spec paths, its role instructions, required skills, and expected report. They must preserve repository files, not delegate further, and return independently to the main session. Inherit the user's agent/model preferences; do not hardcode a model or tool name from another client.
 
