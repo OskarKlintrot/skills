@@ -77,6 +77,8 @@ pwsh -NoProfile -File tests\commands.tests.ps1 -Runtime
 
 The first command checks packaging, descriptions, skill dependencies, and incompatible runtime assumptions. `-Runtime` also requires an installed Copilot CLI: it installs this plugin into a temporary isolated `COPILOT_HOME` and checks actual namespaced command registration through ACP, without executing a model prompt. It restores the environment and removes the temporary installation.
 
+The `Tests` GitHub Actions workflow runs both test scripts on Windows for pull requests, pushes to `master`, and manual runs. It installs a pinned Copilot CLI and uses a local-provider configuration for discovery-only runtime checks, without Copilot credentials or model requests.
+
 ## Install
 
 Use a current GitHub Copilot CLI with Agent Plugins 1.0 support. Once these files are merged into the repository's default branch:
