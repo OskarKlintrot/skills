@@ -2,7 +2,7 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, and a [README conventions skill](#readme-conventions) for maintained documentation. Both are available through plugin installation without development mappings. It contains no agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, and [engineering workflow commands](#engineering-workflow-commands) that use the separately installed Addy agent-skills plugin. These components are available through plugin installation without development mappings. It contains no agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
 
 ## Git conventions
 
@@ -38,11 +38,44 @@ Plugin installation needs no global directory mappings. For local development, t
 
 ## Engineering workflow commands
 
-`com.github.copilot\commands\*.md` contains Copilot command adapters of the nine Claude Code commands from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), version `0.6.14`. The MIT notice is retained in `com.github.copilot\commands\LICENSE`.
+`com.github.copilot\commands\*.md` contains nine Copilot CLI command adapters based on the `.claude\commands` files shipped with [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), version `0.6.14`. The upstream MIT license and copyright notice are retained in `com.github.copilot\commands\LICENSE`.
 
-Commands register with the plugin prefix: `/oskar-tools:spec`, `/oskar-tools:plan`, `/oskar-tools:build`, `/oskar-tools:test`, `/oskar-tools:review`, `/oskar-tools:code-simplify`, `/oskar-tools:constraints`, `/oskar-tools:ship`, and `/oskar-tools:webperf`. Pass arguments after the command. Bare `/plan` and `/review` remain Copilot's built-in commands.
+The commands use skills from the separately installed, enabled `agent-skills` plugin; they do not bundle or install those skills. If a required skill is unavailable, the command reports the missing dependency and stops. Install the dependency if needed:
 
-Install and enable Addy's `agent-skills` plugin separately for the referenced skills. `ship` additionally requires Copilot-exposed `code-reviewer`, `security-auditor`, and `test-engineer` custom agents; `webperf` requires `web-performance-auditor`. Addy's skills-only plugin installation does not expose those root agent definitions. Missing personas are reported rather than substituted. The global development mappings below do not load plugin commands; use plugin installation or a `--plugin-dir` mount, avoiding duplicate hook sources.
+```powershell
+copilot plugin marketplace add addyosmani/agent-skills
+copilot plugin install agent-skills@addy-agent-skills
+copilot skill list
+```
+
+Copilot registers plugin commands with the plugin name as a prefix. Use the full names below; bare `/plan` and `/review` remain Copilot's built-in commands.
+
+| Command | Workflow |
+| --- | --- |
+| `/oskar-tools:spec <feature>` | Clarify requirements and write a spec using `spec-driven-development`. |
+| `/oskar-tools:plan <scope>` | Break the spec into tasks using `planning-and-task-breakdown`; no implementation. |
+| `/oskar-tools:build [auto\|all]` | Implement the next task, or the approved whole plan, using `incremental-implementation` and `test-driven-development`. |
+| `/oskar-tools:test <feature or bug>` | Run TDD or the Prove-It bug-fix workflow using `test-driven-development`. |
+| `/oskar-tools:review <scope>` | Review changes across five axes using `code-review-and-quality`; no edits or GitHub posting. |
+| `/oskar-tools:code-simplify <scope>` | Simplify changed code without changing behavior using `code-simplification`. |
+| `/oskar-tools:constraints [check\|guard\|ratchet]` | Set up or operate the quality bar using `constraint-driven-development`. |
+| `/oskar-tools:webperf <URL, report, or scope>` | Audit browser-facing performance using `performance-optimization`; distinguish measured Deep mode from unmeasured Quick mode. |
+| `/oskar-tools:ship <scope>` | Assess launch readiness using `shipping-and-launch`; produce specialist findings, a GO/NO-GO decision, and a rollback plan, not a deployment. |
+
+Arguments follow the command in chat. For example, `/oskar-tools:build auto` requests whole-plan execution, but does not switch Copilot's runtime mode, grant tool permissions, or authorize commits. Planning approval is separate from permission to commit, push, merge, or deploy. Repository instructions and the session's permission settings still apply.
+
+The adapters use Copilot instruction sources, installed skill names, and available question/delegation tools rather than Claude-specific frontmatter, instruction paths, or agent APIs. `ship` uses three independent specialist subagents when supported. `webperf` uses a discovered performance agent or an available general-purpose subagent. Neither assumes that Addy's plugin registers its agent definitions; if delegation is unavailable, the commands explicitly label a direct single-context assessment. Live browser checks require suitable configured tools, such as Chrome DevTools MCP, and unavailable measurement evidence is reported rather than invented.
+
+Commands load through plugin installation or a session-scoped `--plugin-dir` mount; the global development mappings below do not expose them. Choose plugin loading instead of mappings for the complete component set, avoiding duplicate hook sources. Command loading and argument forwarding are verified in Copilot CLI; other Copilot clients can have different component support.
+
+Run the command checks with:
+
+```powershell
+pwsh -NoProfile -File tests\commands.tests.ps1
+pwsh -NoProfile -File tests\commands.tests.ps1 -Runtime
+```
+
+The first command checks packaging, descriptions, skill dependencies, and incompatible runtime assumptions. `-Runtime` also requires an installed Copilot CLI: it installs this plugin into a temporary isolated `COPILOT_HOME` and checks actual namespaced command registration through ACP, without executing a model prompt. It restores the environment and removes the temporary installation.
 
 ## Install
 
@@ -162,6 +195,7 @@ skills\
 instructions\
 com.github.copilot\
   agents\
+  commands\
   hooks\
     hooks.json
     scripts\
@@ -181,6 +215,12 @@ See [adding agent skills](https://docs.github.com/en/copilot/how-tos/copilot-cli
 Create `com.github.copilot\agents\<agent-name>.agent.md` with the appropriate frontmatter and instructions.
 
 See [creating custom agents](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli). Agent definitions are Copilot-specific; they are not portable Agent Plugins 1.0 components.
+
+### Commands
+
+Create `com.github.copilot\commands\<command-name>.md` with YAML `description` frontmatter followed by the prompt instructions. The CLI registers it as `/oskar-tools:<command-name>`. Do not add a `commands` path field to the Agent Plugins 1.0 manifest; the namespaced directory is its fixed Copilot-specific location.
+
+Keep shared engineering workflows in the upstream skills rather than duplicating them in command adapters. Refer to installed skills by their discovered names, not hardcoded cache paths. Document new dependencies and retain upstream attribution when adapting third-party commands. See the [engineering workflow commands](#engineering-workflow-commands) for loading, arguments, and permission boundaries.
 
 ### Hooks
 

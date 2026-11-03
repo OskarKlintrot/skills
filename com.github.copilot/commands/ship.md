@@ -1,42 +1,43 @@
 ---
-description: Run the pre-launch checklist via parallel fan-out to specialist personas, then synthesize a go/no-go decision
+description: Run the pre-launch checklist via parallel specialist reviews, then synthesize a go/no-go decision
 ---
 
-Invoke the agent-skills:shipping-and-launch skill.
+Invoke the installed `agent-skills:shipping-and-launch` skill. If that skill is unavailable, stop and report the missing dependency; do not silently substitute a generic workflow.
 
-`/oskar-tools:ship` is a **fan-out orchestrator**. It runs three specialist personas in parallel against the current change, then merges their reports into a single go/no-go decision with a rollback plan. The personas operate independently — no shared state, no ordering — which is what makes parallel execution safe and useful here.
+Use the text following this command as the change, release, or deployment target to assess.
 
-## Phase A — Parallel fan-out
+This command assesses launch readiness and produces a decision and rollback plan. It does not authorize deployment, commits, pushes, PR approval, or merging. Respect repository instructions, existing user work, and session permissions.
 
-Spawn three subagents concurrently using Copilot's available delegation tool. **Issue all three calls in a single assistant turn so they execute in parallel** — sequential calls defeat the purpose of this command.
+## Phase A - Parallel specialist reviews
 
-Select the corresponding custom agent using the delegation tool's supported agent selector:
+Establish the exact change scope (staged/unstaged changes or specified commits), relevant spec, and available verification commands before delegating.
 
-1. **`code-reviewer`** — Run a five-axis review (correctness, readability, architecture, security, performance) on the staged changes or recent commits. Output the standard review template.
-2. **`security-auditor`** — Run a vulnerability and threat-model pass. Check OWASP Top 10, secrets handling, auth/authz, dependency CVEs. Output the standard audit report.
-3. **`test-engineer`** — Analyze test coverage for the change. Identify gaps in happy path, edge cases, error paths, and concurrency scenarios. Output the standard coverage analysis.
+Use Copilot's available subagent/delegation tool to launch three independent reviews in parallel, issuing the calls together:
 
-Resolve these personas from the custom agents Copilot actually exposes. The installed agent-skills plugin supplies skills, but its root agents directory is not Copilot's plugin agent location. If a required persona is missing, stop and report the missing agent rather than inventing its instructions.
+1. **Code reviewer** - Invoke `agent-skills:code-review-and-quality` and review correctness, readability, architecture, security, and performance. Return specific file:line findings, categorized as Critical, Required, Optional, or Nit.
+2. **Security auditor** - Invoke `agent-skills:security-and-hardening` and inspect OWASP Top 10, secrets handling, auth/authz, and available dependency vulnerability evidence. Return severity, confidence, file:line evidence, and remediations. Never print credentials.
+3. **Test engineer** - Invoke `agent-skills:test-driven-development` for test strategy and analyze coverage of happy paths, edge cases, error paths, and concurrency. Return gaps, supporting test/file references, and actual verification results or checks not run. Do not implement tests or fixes during this assessment.
 
-In a harness without delegation, use each available persona's system prompt sequentially in the main context and disclose that this is a single-context assessment — do not claim independent parallel execution.
+Use a matching custom agent only if Copilot actually exposes it; otherwise use an available general-purpose subagent with the role instructions above. Skills installed from the Addy plugin do not imply that its specialist agents are registered.
 
-Constraints:
-- Keep the fan-out flat — do not let one persona delegate to another.
-- Each subagent gets its own context window and returns only its report to this main session.
-- Use the custom agent definitions and resolution supported by Copilot, not Claude-specific agent paths or Agent Teams.
+Give each subagent a complete, bounded assignment: exact scope, relevant spec paths, its role instructions, required skills, and expected report. They must preserve repository files, not delegate further, and return independently to the main session. Inherit the user's agent/model preferences; do not hardcode a model or tool name from another client.
 
-## Phase B — Merge in main context
+If a required skill is unavailable, stop and report it. If delegation or parallel execution is unavailable, state the limitation and run the same checks directly and sequentially; label this as a single-context assessment, not independent parallel reviews.
 
-Once all three reports are back, the main agent (not a sub-persona) synthesizes them:
+## Phase B - Merge in main context
 
-1. **Code Quality** — Aggregate Critical/Required findings from `code-reviewer` and any failing tests, lint, or build output. Resolve duplicates between reviewers.
-2. **Security** — Promote any Critical/High `security-auditor` findings to launch blockers. Cross-reference with `code-reviewer`'s security axis.
-3. **Performance** — Pull from `code-reviewer`'s performance axis; cross-check Core Web Vitals if applicable.
-4. **Accessibility** — Verify keyboard nav, screen reader support, contrast (not covered by the three personas — handle directly here, or invoke the accessibility checklist).
-5. **Infrastructure** — Env vars, migrations, monitoring, feature flags. Verify directly.
-6. **Documentation** — README, ADRs, changelog. Verify directly.
+Once all three reports are back, the main agent synthesizes them:
 
-## Phase C — Decision and rollback
+1. **Code Quality** - Aggregate Critical/Required findings and any failing tests, lint, or build output. Resolve duplicates between reviewers.
+2. **Security** - Promote Critical/High security findings to launch blockers. Cross-reference the code review's security axis.
+3. **Performance** - Pull from the code review's performance axis; cross-check sourced Core Web Vitals if applicable. Do not invent metrics.
+4. **Accessibility** - Verify keyboard navigation, screen reader support, and contrast when applicable; report unavailable browser evidence.
+5. **Infrastructure** - Env vars, migrations, monitoring, feature flags. Verify directly without exposing secret values or performing deployments.
+6. **Documentation** - README, ADRs, changelog. Verify directly.
+
+Mark missing, failed, or incomplete checks explicitly. A missing report or required verification is not a passing result.
+
+## Phase C - Decision and rollback
 
 Produce a single output:
 
@@ -44,29 +45,29 @@ Produce a single output:
 ## Ship Decision: GO | NO-GO
 
 ### Blockers (must fix before ship)
-- [Source persona: Critical finding + file:line]
+- [Source reviewer: finding + file:line, or required check without evidence]
 
 ### Recommended fixes (should fix before ship)
-- [Source persona: Important finding + file:line]
+- [Source reviewer: finding + file:line]
 
-### Acknowledged risks (shipping anyway)
-- [Risk + mitigation]
+### Acknowledged risks (accepted by the user)
+- [Risk + mitigation + explicit acceptance, or none]
 
 ### Rollback plan
-- Trigger conditions: [what signals would prompt rollback]
+- Trigger conditions: [signals that would prompt rollback]
 - Rollback procedure: [exact steps]
-- Recovery time objective: [target]
+- Recovery time objective: [target, or not established]
 
 ### Specialist reports (full)
-- [code-reviewer report]
-- [security-auditor report]
-- [test-engineer report]
+- [Code review report]
+- [Security audit report]
+- [Test coverage report]
 ```
 
 ## Rules
 
-1. The three Phase A personas run in parallel when delegation is available; disclose the single-context fallback otherwise.
-2. Personas do not call each other. The main agent merges in Phase B.
-3. The rollback plan is mandatory before any GO decision.
-4. If any persona returns a Critical finding, the default verdict is NO-GO unless the user explicitly accepts the risk.
-5. **Skip the fan-out only if all of the following are true:** the change touches 2 files or fewer, the diff is under 50 lines, and it does not touch auth, payments, data access, or config/env. Otherwise, default to fan-out. `/oskar-tools:ship` is designed for production-bound changes — when the blast radius is non-trivial, run the parallel review even if the diff looks small.
+1. Run Phase A reviews independently in parallel when supported; disclose any single-context fallback.
+2. Reviewers do not call each other. The main agent merges in Phase B.
+3. A rollback plan is mandatory before a GO decision.
+4. Critical/High security findings, Critical code findings, failing required checks, or missing required evidence default to NO-GO. Do not accept risks on the user's behalf.
+5. Skip the fan-out only if all of the following are true: the change touches at most 2 files, the diff is under 50 lines, and it does not touch auth, payments, data access, or config/env. In that case perform the same checks directly and identify that scope in the report.
