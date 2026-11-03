@@ -93,6 +93,24 @@ test("invalid arguments fail before spawning agents", async () => {
     }
 });
 
+test("review steps select packaged Addy personas without changing other agents or models", async () => {
+    const h = harness();
+    await approvePlan(h);
+    await lifecycle.run(h.ctx);
+    const personas = {
+        "Review:code": "oskar-tools:code-reviewer",
+        "Review:security": "oskar-tools:security-auditor",
+        "Review:tests": "oskar-tools:test-engineer",
+    };
+    for (const call of h.calls) {
+        assert.equal(call.agent, personas[call.label], call.label);
+        assert.equal(call.model, undefined);
+        if (personas[call.label]) {
+            assert.match(call.prompt, /structured report.*persona.*template/i);
+        }
+    }
+});
+
 test("a goal alone cannot start unattended requirements discovery", async () => {
     const h = harness({}, { goal: "Build a feature" });
     await assert.rejects(() => lifecycle.run(h.ctx), /specPath/);

@@ -2,7 +2,7 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, [engineering workflow commands](#engineering-workflow-commands) that use the separately installed Addy agent-skills plugin, and [dynamic workflows](#dynamic-workflows) for an engineering lifecycle and a no-agent `hello-world` example. These components are available through plugin installation without development mappings. It contains no agent definitions, standalone instructions, or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, [engineering workflow commands](#engineering-workflow-commands) that use the separately installed Addy agent-skills plugin, four [specialist personas](#agents), and [dynamic workflows](#dynamic-workflows) for an engineering lifecycle and a no-agent `hello-world` example. These components are available through plugin installation without development mappings. It contains no standalone instructions or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
 
 ## Git conventions
 
@@ -65,7 +65,7 @@ Copilot registers plugin commands with the plugin name as a prefix. Use the full
 
 Arguments follow the command in chat. `/oskar-tools:build` includes a commit after each verified task; `build auto` also commits newly generated planning documents separately after plan approval. `/oskar-tools:spec` follows the upstream skill's instruction to commit the spec. `/oskar-tools:addy-lifecycle` commits the approved spec, approved plan/task artifacts, and each verified task separately. These workflows do not switch Copilot's runtime mode or bypass tool permissions and repository instructions. Commits do not authorize pushing, merging, or deploying.
 
-The adapters use Copilot instruction sources, installed skill names, and available question/delegation tools rather than Claude-specific frontmatter, instruction paths, or agent APIs. `ship` uses three independent specialist subagents when supported. `webperf` uses a discovered performance agent or an available general-purpose subagent. Neither assumes that Addy's plugin registers its agent definitions; if delegation is unavailable, the commands explicitly label a direct single-context assessment. Live browser checks require suitable configured tools, such as Chrome DevTools MCP, and unavailable measurement evidence is reported rather than invented.
+The adapters use Copilot instruction sources, installed skill names, and available question/delegation tools rather than Claude-specific frontmatter, instruction paths, or agent APIs. `ship` uses three independent specialist subagents when supported, preferring this plugin's code, security and test personas. `webperf` prefers this plugin's performance persona. The commands can use available general-purpose subagents if custom personas are unavailable; if delegation is unavailable, they explicitly label a direct single-context assessment. Addy's separately installed plugin supplies skills; this plugin supplies the Copilot persona definitions. Live browser checks require suitable configured tools, such as Chrome DevTools MCP, and unavailable measurement evidence is reported rather than invented.
 
 Commands load through plugin installation or a session-scoped `--plugin-dir` mount; the global development mappings below do not expose them. Choose plugin loading instead of mappings for the complete component set, avoiding duplicate hook sources. Command loading and argument forwarding are verified in Copilot CLI; other Copilot clients can have different component support.
 
@@ -76,7 +76,7 @@ pwsh -NoProfile -File tests\commands.tests.ps1
 pwsh -NoProfile -File tests\commands.tests.ps1 -Runtime
 ```
 
-The first command checks packaging, descriptions, skill dependencies, and incompatible runtime assumptions. `-Runtime` also requires an installed Copilot CLI: it installs this plugin into a temporary isolated `COPILOT_HOME` and checks actual namespaced command registration through ACP, without executing a model prompt. It restores the environment and removes the temporary installation.
+The first command checks command/persona packaging, descriptions, skill dependencies, and incompatible runtime assumptions. `-Runtime` also requires an installed Copilot CLI: it installs this plugin into a temporary isolated `COPILOT_HOME` and checks actual namespaced command and persona registration through ACP, without executing a model prompt. It restores the environment and removes the temporary installation.
 
 The `Tests` GitHub Actions workflow runs both test scripts on Windows for pull requests, pushes to `master`, and manual runs. It installs a pinned Copilot CLI and uses a local-provider configuration for discovery-only runtime checks, without Copilot credentials or model requests.
 
@@ -221,6 +221,17 @@ See [adding agent skills](https://docs.github.com/en/copilot/how-tos/copilot-cli
 
 ### Agents
 
+The four personas in `com.github.copilot\agents` are adapted from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), version `0.6.15`. Their MIT license is retained in `com.github.copilot\agents\LICENSE`; Copilot integration changes belong to this repository, not Addy Osmani. Original content is preserved in the initial import commit before local adaptations.
+
+| Copilot agent ID | Role | Used by |
+| --- | --- | --- |
+| `oskar-tools:code-reviewer` | Five-axis code review | Lifecycle `Review:code`, `/oskar-tools:ship` |
+| `oskar-tools:security-auditor` | Security and trust-boundary review | Lifecycle `Review:security`, `/oskar-tools:ship` |
+| `oskar-tools:test-engineer` | Test strategy and coverage analysis | Lifecycle `Review:tests`, `/oskar-tools:ship` |
+| `oskar-tools:web-performance-auditor` | Sourced web-performance assessment | `/oskar-tools:webperf`, not the lifecycle's global review fan-out |
+
+Personas define the specialist perspective; separately installed `agent-skills:*` skills define the method. Caller scope, read-only assignments and structured workflow schemas take precedence over a persona's default Markdown template. Missing required skills are blockers. The lifecycle selects its three review personas explicitly through `ctx.agent`'s `agent` option, with no silent generic fallback. Other lifecycle steps use ordinary workflow agents. No persona fixes a model, reasoning effort or context tier.
+
 Create `com.github.copilot\agents\<agent-name>.agent.md` with the appropriate frontmatter and instructions.
 
 See [creating custom agents](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli). Agent definitions are Copilot-specific; they are not portable Agent Plugins 1.0 components.
@@ -289,7 +300,7 @@ Spec/plan commit workers and Build workers return a full commit object ID and ac
 
 The diagrams below describe the coordinator skill and workflow together. Each diagram is a separate stage; "continue" and "repeat" boxes name the next action rather than drawing long return arrows across stages. Every `NO-GO` endpoint uses the common recovery flow in stage 10.
 
-The main conversation owns user interaction and records the pre-edit baseline. Each workflow phase and preparatory commit gets a fresh subagent context, and each Build task gets its own subagent. These are not separate project sessions: they share the same worktree, files and index, with no per-task branch or isolated checkout. Tasks run sequentially; only the three read-only Review agents run in parallel. Worker labels identify assignments, not custom-agent or model selections. The workflow passes no model, reasoning-effort or context-tier overrides; effective selection is left to Copilot's runtime settings and policy, not fixed by this plugin.
+The main conversation owns user interaction and records the pre-edit baseline. Each workflow phase and preparatory commit gets a fresh subagent context, and each Build task gets its own subagent. These are not separate project sessions: they share the same worktree, files and index, with no per-task branch or isolated checkout. Tasks run sequentially; only the three read-only Review agents run in parallel. Worker labels identify assignments; the Review calls separately select the three packaged personas listed under [Agents](#agents). The workflow passes no model, reasoning-effort or context-tier overrides; effective selection is left to Copilot's runtime settings and policy, not fixed by this plugin.
 
 ###### 1. Understand intent
 
@@ -439,14 +450,14 @@ Verify does not fix source, install dependencies, update snapshots or use auto-f
 
 ###### 8. Review in parallel
 
-Three independent subagents read the change and Verify evidence. They do not edit files or run concurrent builds/tests, install dependencies, update snapshots or start shared servers.
+Three independent subagents use the packaged `code-reviewer`, `security-auditor` and `test-engineer` personas to read the committed change and Verify evidence. They return the workflow's structured schema rather than their default Markdown templates. They do not edit files or run concurrent builds/tests, install dependencies, update snapshots or start shared servers.
 
 ```mermaid
 flowchart TD
     launch["Start three specialist reviews in parallel"]
-    launch --> code["Code: correctness, readability and architecture"]
-    launch --> security["Security: OWASP, auth, secrets and dependency evidence"]
-    launch --> tests["Tests: acceptance coverage, edge cases and error paths"]
+    launch --> code["code-reviewer: correctness, readability and architecture"]
+    launch --> security["security-auditor: OWASP, auth, secrets and dependencies"]
+    launch --> tests["test-engineer: acceptance coverage, edge cases and errors"]
     code --> join["Wait for all three reports"]
     security --> join
     tests --> join

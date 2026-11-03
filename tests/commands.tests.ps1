@@ -19,6 +19,7 @@ $skills = [ordered]@{
 $failures = 0
 $descriptions = @{}
 $packagedSkills = @('addy-lifecycle', 'git-conventions', 'readme-conventions')
+$packagedAgents = @('code-reviewer', 'security-auditor', 'test-engineer', 'web-performance-auditor')
 
 function Assert-Check([string]$Name, [bool]$Condition) {
     if ($Condition) {
@@ -43,6 +44,24 @@ Assert-Check 'Exactly the ten documented commands are packaged' (
 $skillDirectories = @(Get-ChildItem -LiteralPath (Join-Path $root 'skills') -Directory)
 Assert-Check 'Packaged skills contain the lifecycle coordinator and conventions skills' (
     -not (Compare-Object $packagedSkills @($skillDirectories.Name))
+)
+$agentDirectory = Join-Path $root 'com.github.copilot' 'agents'
+$agentFiles = @(Get-ChildItem -LiteralPath $agentDirectory -Filter '*.agent.md' -File)
+Assert-Check 'All four Addy personas are packaged as Copilot agents' (
+    -not (Compare-Object @($packagedAgents | ForEach-Object { "$_.agent.md" }) @($agentFiles.Name))
+)
+foreach ($name in $packagedAgents) {
+    $persona = Get-Content -LiteralPath (Join-Path $agentDirectory "$name.agent.md") -Raw
+    Assert-Check "$name has discoverable metadata and Copilot integration boundaries" (
+        $persona -match "\A---\r?\nname: $name\r?\ndescription: [^\r\n]+" -and
+        $persona.Contains('## Copilot integration') -and
+        $persona.Contains('agent-skills:') -and
+        $persona.Contains('structured report') -and
+        $persona -notmatch '\.\./docs/agents\.md|`skills/|`references/'
+    )
+}
+Assert-Check 'Persona imports retain their upstream MIT license' (
+    (Get-Content -LiteralPath (Join-Path $agentDirectory 'LICENSE') -Raw).Contains('Copyright (c) 2025 Addy Osmani')
 )
 
 foreach ($name in $skills.Keys) {
@@ -191,7 +210,15 @@ try {
         if ($message.params.update.sessionUpdate -eq 'available_commands_update') {
             $commands = @($message.params.update.availableCommands)
         }
-        if ($message.id -eq 2) { $sessionCreated = $true }
+        if ($message.id -eq 2) {
+            $sessionCreated = $true
+            $agentOptions = @($message.result.configOptions | Where-Object id -eq 'agent')
+            foreach ($name in $packagedAgents) {
+                Assert-Check "Installed plugin discovers the $name persona" (
+                    @($agentOptions.options | Where-Object value -eq "$($manifest.name):$name").Count -eq 1
+                )
+            }
+        }
     }
 
     foreach ($name in $skills.Keys) {

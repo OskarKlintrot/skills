@@ -25,7 +25,7 @@ If Deep mode was requested but the required evidence or tools are unavailable, r
 
 ## Run the audit
 
-Use a discovered `web-performance-auditor` custom agent if available. Otherwise use an available general-purpose subagent with the audit instructions in this command and the installed performance skill; if delegation is unavailable, perform the audit directly and state that it is running in the current context. Do not assume that the Addy skills plugin registers its specialist persona.
+Prefer the discovered `oskar-tools:web-performance-auditor` persona packaged by this plugin. Otherwise use a discovered matching custom agent or an available general-purpose subagent with the audit instructions in this command and the installed performance skill; if delegation is unavailable, perform the audit directly and state that it is running in the current context. Do not assume that the Addy skills plugin alone registers its specialist persona.
 
 Pass the reviewer explicitly:
 - The files, components, or diff under review

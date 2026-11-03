@@ -181,12 +181,12 @@ export const lifecycle = {
             if (needsInput.length) ctx.log(`MAIN SESSION INPUT REQUIRED: ${JSON.stringify(needsInput)}`);
             return { verdict: "NO-GO", phase, reason, needsInput, reports };
         };
-        const agent = async (label, skills, instruction, context, outputSchema = schema()) => {
+        const agent = async (label, skills, instruction, context, outputSchema = schema(), persona) => {
             const result = await ctx.agent(
                 `Engineering lifecycle: ${label}\nRequired skills: ${skills.map((s) => `agent-skills:${s}`).join(", ")}\n` +
                 boundaries + `\nAssignment:\n${instruction}\nContext (JSON):\n` +
                 JSON.stringify({ ...context, baselinePath: ctx.args.baselinePath }),
-                { label, schema: outputSchema },
+                { label, schema: outputSchema, ...(persona ? { agent: persona } : {}) },
             );
             reports[label] = result;
             return result;
@@ -279,18 +279,19 @@ export const lifecycle = {
 
         ctx.phase("Review");
         const roles = [
-            ["code", "code-review-and-quality", "Correctness, readability, architecture, security and performance."],
-            ["security", "security-and-hardening", "OWASP, auth/authz, secrets and available dependency evidence. " +
+            ["code", "code-reviewer", "code-review-and-quality", "Correctness, readability, architecture, security and performance."],
+            ["security", "security-auditor", "security-and-hardening", "OWASP, auth/authz, secrets and available dependency evidence. " +
                 "Include severity, confidence, file:line evidence and remediation in each finding detail."],
-            ["tests", "test-driven-development", "Acceptance coverage, happy/error/edge paths, concurrency and " +
+            ["tests", "test-engineer", "test-driven-development", "Acceptance coverage, happy/error/edge paths, concurrency and " +
                 "actual verification evidence. Do not implement missing tests."],
         ];
-        const reviews = await ctx.parallel(roles.map(([role, skill, focus]) => () => agent(
+        const reviews = await ctx.parallel(roles.map(([role, persona, skill, focus]) => () => agent(
             `Review:${role}`, [skill],
             "Read-only independent specialist review of the exact full change against the approved spec " +
             "and plan, including relevant pre-existing changes but attributing findings precisely. " +
             "Inspect the supplied spec, plan and completed-task commits, not only the working-tree diff; " +
             "a clean worktree is not evidence that there is no change to review. " +
+            "Return the workflow's structured report instead of the persona's default Markdown template. " +
             focus + " Do not edit files or invoke the skill's remediation steps. Use the existing Verify " +
             "report for test execution evidence; do not run builds/tests, install dependencies, update " +
             "snapshots or start shared servers concurrently. Report missing evidence rather than " +
@@ -298,6 +299,7 @@ export const lifecycle = {
             "findings, or missing required evidence, mean NO-GO. Do not accept risk for the user.",
             { spec, specCommit, plan, planCommit, completed, verification },
             schema({ verdict: verdictSchema, findings: { type: "array", items: findingSchema } }),
+            `oskar-tools:${persona}`,
         )));
         if (reviews.length !== roles.length || reviews.some((review) =>
             !evidenced(review) || review.verdict !== "GO" || !Array.isArray(review.findings) ||
