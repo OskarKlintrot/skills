@@ -49,6 +49,8 @@ const evidenced = (report) => report?.status === "ready" && nonempty(report.summ
     Array.isArray(report.evidence) && report.evidence.length > 0 && report.evidence.every(nonempty) &&
     passingChecks(report.checks) && Array.isArray(report.questions) && report.questions.length === 0;
 const verified = (report) => evidenced(report) && report.checks.length > 0;
+const committed = (report) => verified(report) && typeof report.commit === "string" &&
+    /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(report.commit);
 const blocking = new Set(["Critical", "High", "Required"]);
 
 function orderTasks(tasks) {
@@ -86,7 +88,10 @@ If any skill or task requires clarification, capability-map approval, design sel
 risk acceptance, or other human input, return status blocked and put each concrete question
 in questions. Never assume an answer. Return questions: [] only when no user input is needed.
 The main session owns all user dialogue, explicit decisions and checkpoint approval.
-Do not delegate or start nested workflows. Do not commit, push, merge, or deploy.
+Do not delegate or start nested workflows. Do not push, merge, or deploy.
+Only Commit:spec, Commit:plan and Build may create commits, after the corresponding
+user approval and required verification. All other workers must not commit or stage files.
+Commit workers must not edit source, spec, plan or task content.
 Do not create branches, stash, reset, change permissions, or accept risks for the user.
 Preserve pre-existing work and the index. Inspect git status, git diff and git diff --cached
 before any source edits. Stop if overlapping user work cannot be preserved safely.
@@ -103,6 +108,24 @@ Evidence must cite actual artifact paths, file:line references or observed comma
 Do not invent measurements, approvals, successful checks or completion. A failed or unavailable
 required check means blocked; an inapplicable check must be explained, not reported as passed.
 Return the requested structured report, including reasons and recovery steps when blocked.
+`;
+
+const commitInstructions = `
+Follow agent-skills:git-workflow-and-versioning and repository git conventions.
+Use the main session's recorded pre-edit baseline and inspect git status --porcelain,
+git diff and git diff --cached before staging. Include only this assignment's changes
+relative to that baseline; preserve unrelated staged entries and user edits, including
+those in the same file. Do not use git add -A or commit the whole index blindly.
+If the baseline is missing, a change cannot be separated safely, or permissions/hooks
+prevent a commit, return blocked and explain the recovery; never skip or fake the commit.
+Do not stash, reset, amend, or bypass hooks. Review the exact staged assignment diff for
+scope and secrets. Preserve the user's index and worktree outside the assignment.
+Use an atomic descriptive commit, including repository-required attribution trailers.
+Return the full commit object ID in commit, and actual git verification commands and
+output in checks. Verify the commit exists, is reachable from HEAD and contains the
+intended change and no unrelated edits; report failure as blocked.
+If an interrupted or prior run already committed this exact approved content, inspect
+and report that existing reachable commit instead of making an empty/duplicate commit.
 `;
 
 async function loadSpec(specPath) {
@@ -133,17 +156,21 @@ export const lifecycle = {
             "sequential build loop -> verify -> specialist review -> launch-readiness decision. " +
             "Use /oskar-tools:addy-lifecycle for requirements dialogue first. Pauses after spec and plan; " +
             "never resume without explicit user approval. Workers cannot conduct interviews. " +
-            "Never deploys or commits. Requires installed Addy agent-skills. args: { goal: string, specPath: string }.",
+            "Commits approved spec, plan and verified tasks; never pushes, merges or deploys. " +
+            "Requires installed Addy agent-skills. args: { goal: string, specPath: string, baselinePath: string }.",
         phases: ["Define", "Plan", "Build", "Verify", "Review", "Ship"].map((title) => ({ title })),
         argsSchema: {
-            type: "object", required: ["goal", "specPath"],
-            properties: { goal: text, specPath: text },
+            type: "object", required: ["goal", "specPath", "baselinePath"],
+            properties: { goal: text, specPath: text, baselinePath: text },
         },
     },
     run: async (ctx) => {
         if (!nonempty(ctx.args?.goal)) throw new Error("goal must be a non-empty string.");
         if (!nonempty(ctx.args.specPath)) {
             throw new Error("specPath is required. Prepare the spec interactively using /oskar-tools:addy-lifecycle first.");
+        }
+        if (!nonempty(ctx.args.baselinePath)) {
+            throw new Error("baselinePath is required: record the pre-edit worktree and index baseline in the main session.");
         }
         const reports = {};
         const stop = (phase, reason) => {
@@ -157,7 +184,8 @@ export const lifecycle = {
         const agent = async (label, skills, instruction, context, outputSchema = schema()) => {
             const result = await ctx.agent(
                 `Engineering lifecycle: ${label}\nRequired skills: ${skills.map((s) => `agent-skills:${s}`).join(", ")}\n` +
-                boundaries + `\nAssignment:\n${instruction}\nContext (JSON):\n${JSON.stringify(context)}`,
+                boundaries + `\nAssignment:\n${instruction}\nContext (JSON):\n` +
+                JSON.stringify({ ...context, baselinePath: ctx.args.baselinePath }),
                 { label, schema: outputSchema },
             );
             reports[label] = result;
@@ -188,6 +216,11 @@ export const lifecycle = {
             { goal: ctx.args.goal, preparedSpec });
         if (!evidenced(spec)) return stop("Define", "Spec missing, incomplete, or blocked.");
         await approve("approve-spec", spec);
+        const specCommit = await agent("Commit:spec", ["git-workflow-and-versioning"],
+            "The exact spec has been explicitly approved. Commit only its approved changes relative " +
+            "to the main session's pre-edit baseline. Read the spec without modifying its content. " +
+            commitInstructions, { goal: ctx.args.goal, preparedSpec, spec }, schema({ commit: text }));
+        if (!committed(specCommit)) return stop("Commit:spec", "Approved spec commit missing, failed, or unverified.");
 
         ctx.phase("Plan");
         const plan = await agent("Plan", ["planning-and-task-breakdown"],
@@ -206,20 +239,29 @@ export const lifecycle = {
         const tasks = evidenced(plan) ? orderTasks(plan.tasks) : null;
         if (!tasks) return stop("Plan", "Plan blocked or task graph empty, invalid, duplicated, or cyclic.");
         await approve("approve-plan", plan);
+        const planCommit = await agent("Commit:plan", ["git-workflow-and-versioning"],
+            "The exact plan and task list have been explicitly approved. Commit only these planning " +
+            "artifacts relative to the main session's pre-edit baseline and the completed spec commit. " +
+            "Do not modify their content or implement any task. " + commitInstructions,
+            { goal: ctx.args.goal, spec, specCommit, plan }, schema({ commit: text }));
+        if (!committed(planCommit)) return stop("Commit:plan", "Approved plan commit missing, failed, or unverified.");
 
         ctx.phase("Build");
         const completed = [];
         for (const task of tasks) {
             const result = await agent(`Build:${task.id}`,
-                ["incremental-implementation", "test-driven-development"],
+                ["incremental-implementation", "test-driven-development", "git-workflow-and-versioning"],
                 "Implement exactly this approved task, not subsequent tasks. Prerequisites have completed. " +
                 "Use RED -> GREEN -> regression -> build/type/lint checks. Demonstrate the acceptance " +
-                "criteria, update the durable task status only after verification, and leave changes uncommitted. " +
+                "criteria; after verification, record task completion and commit this task's changes " +
+                "together with its task-status update before returning ready. " +
                 "For a failed check use agent-skills:debugging-and-error-recovery; if unavailable or the " +
                 "failure cannot be resolved within this task, stop blocked, preserve evidence and explain it. " +
-                "Return exact verification commands and actual output evidence. No unbounded retries.",
-                { goal: ctx.args.goal, spec, plan, task, completed });
-            if (!verified(result)) return stop(`Build:${task.id}`, "Task blocked or required verification missing/failed.");
+                "Return exact verification commands and actual output evidence. No unbounded retries. " +
+                commitInstructions,
+                { goal: ctx.args.goal, spec, specCommit, plan, planCommit, task, completed },
+                schema({ commit: text }));
+            if (!committed(result)) return stop(`Build:${task.id}`, "Task blocked, verification failed, or commit missing/unverified.");
             completed.push({ task, report: result });
         }
 
@@ -247,12 +289,14 @@ export const lifecycle = {
             `Review:${role}`, [skill],
             "Read-only independent specialist review of the exact full change against the approved spec " +
             "and plan, including relevant pre-existing changes but attributing findings precisely. " +
+            "Inspect the supplied spec, plan and completed-task commits, not only the working-tree diff; " +
+            "a clean worktree is not evidence that there is no change to review. " +
             focus + " Do not edit files or invoke the skill's remediation steps. Use the existing Verify " +
             "report for test execution evidence; do not run builds/tests, install dependencies, update " +
             "snapshots or start shared servers concurrently. Report missing evidence rather than " +
             "claiming a check ran. Report specific findings with locations. Critical, High or Required " +
             "findings, or missing required evidence, mean NO-GO. Do not accept risk for the user.",
-            { spec, plan, completed, verification },
+            { spec, specCommit, plan, planCommit, completed, verification },
             schema({ verdict: verdictSchema, findings: { type: "array", items: findingSchema } }),
         )));
         if (reviews.length !== roles.length || reviews.some((review) =>
@@ -278,7 +322,7 @@ export const lifecycle = {
         if (!evidenced(ship) || ship.verdict !== "GO" || !nonempty(ship.rollback)) {
             return stop("Ship", "Launch assessment blocked, missing evidence, or lacks a rollback plan.");
         }
-        ctx.log("GO: assessed launch readiness only. No commit, push, merge, or deployment authorized.");
+        ctx.log("GO: approved spec, plan and tasks committed. Launch readiness only; no push, merge or deployment authorized.");
         return { verdict: "GO", phase: "Ship", reports };
     },
 };

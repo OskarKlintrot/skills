@@ -5,15 +5,18 @@ import { test } from "node:test";
 import { lifecycle } from "../com.github.copilot/extensions/addy-lifecycle/workflow.mjs";
 
 const check = { command: "npm test", outcome: "passed", evidence: "All tests passed" };
+const commit = "a".repeat(40);
 const task = (id, dependsOn = []) => ({ id, title: id, acceptance: "Works", dependsOn });
 const report = (extra = {}) => ({
     status: "ready", summary: "Ready", evidence: ["SPEC.md"], checks: [check], questions: [], ...extra,
 });
 const responses = () => ({
     Define: report(),
+    "Commit:spec": report({ commit }),
     Plan: report({ tasks: [task("second", ["first"]), task("first")] }),
-    "Build:first": report(),
-    "Build:second": report(),
+    "Commit:plan": report({ commit }),
+    "Build:first": report({ commit }),
+    "Build:second": report({ commit }),
     Verify: report(),
     "Review:code": report({ verdict: "GO", findings: [] }),
     "Review:security": report({ verdict: "GO", findings: [] }),
@@ -23,6 +26,7 @@ const responses = () => ({
 
 function harness(overrides = {}, args = {
     goal: "Build a feature", specPath: join("tests", "fixtures", "lifecycle-spec.md"),
+    baselinePath: "session-baseline.json",
 }) {
     const answers = { ...responses(), ...overrides };
     const journal = new Map();
@@ -71,11 +75,11 @@ test("spec and plan pause before any implementation; resume reuses phase results
     await approveSpec(h);
     assert.deepEqual(h.calls.map((c) => c.label), ["Define"]);
     await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan/);
-    assert.deepEqual(h.calls.map((c) => c.label), ["Define", "Plan"]);
+    assert.deepEqual(h.calls.map((c) => c.label), ["Define", "Commit:spec", "Plan"]);
     const result = await lifecycle.run(h.ctx);
     assert.equal(result.verdict, "GO");
     assert.deepEqual(h.calls.map((c) => c.label), [
-        "Define", "Plan", "Build:first", "Build:second", "Verify",
+        "Define", "Commit:spec", "Plan", "Commit:plan", "Build:first", "Build:second", "Verify",
         "Review:code", "Review:security", "Review:tests", "Ship",
     ]);
     assert.ok(h.calls.every((c) => !c.model && !c.reasoningEffort && !c.contextTier));
@@ -103,7 +107,7 @@ test("workflow uses the same public name as its coordinator skill and command", 
 
 test("missing spec files, directories and paths outside the worktree stop before any phase agent", async () => {
     for (const specPath of [join("tests", "fixtures", "missing-spec.md"), ".", ".."]) {
-        const h = harness({}, { goal: "Build a feature", specPath });
+        const h = harness({}, { goal: "Build a feature", specPath, baselinePath: "session-baseline.json" });
         const result = await lifecycle.run(h.ctx);
         assert.equal(result.verdict, "NO-GO");
         assert.equal(h.calls.length, 0);
@@ -114,7 +118,9 @@ test("missing spec files, directories and paths outside the worktree stop before
 test("empty or changed spec cannot bypass preparation or reuse stale approval", async () => {
     const directory = await mkdtemp(resolve("tests", "fixtures", "lifecycle-"));
     const path = join(directory, "SPEC.md");
-    const args = { goal: "Build a feature", specPath: relative(process.cwd(), path) };
+    const args = {
+        goal: "Build a feature", specPath: relative(process.cwd(), path), baselinePath: "session-baseline.json",
+    };
     try {
         await writeFile(path, " ");
         const empty = harness({}, args);
@@ -139,7 +145,7 @@ test("every phase routes unanswered questions to the main session without advanc
         const h = harness({
             [phase]: { ...base, questions: ["Which retention period should apply?"] },
         });
-        if (phase === "Plan") {
+        if (phase === "Plan" || phase === "Commit:spec") {
             await approveSpec(h);
         } else if (phase !== "Define") {
             await approvePlan(h);
@@ -193,7 +199,7 @@ test("invalid dependency graphs never reach the plan approval gate", async () =>
         const result = await lifecycle.run(h.ctx);
         assert.equal(result.verdict, "NO-GO");
         assert.equal(result.phase, "Plan");
-        assert.equal(h.calls.length, 2);
+        assert.equal(h.calls.length, 3);
     }
 });
 
@@ -256,11 +262,16 @@ test("prompts enforce skills, shared-worktree safety and no release actions", as
     for (const call of h.calls) {
         assert.match(call.prompt, /missing.*skill|skill.*unavailable/i);
         assert.match(call.prompt, /Do not delegate/);
-        assert.match(call.prompt, /Do not commit, push, merge, or deploy/);
+        assert.match(call.prompt, /Do not push, merge, or deploy/);
         assert.match(call.prompt, /pre-existing/);
     }
     assert.match(h.calls.find((c) => c.label === "Build:first").prompt, /RED.*GREEN/);
     assert.match(h.calls.find((c) => c.label === "Review:code").prompt, /Read-only/);
+    for (const call of h.calls.filter((c) => c.label.startsWith("Review:"))) {
+        assert.match(call.prompt, /completed-task commits, not only the working-tree diff/);
+        assert.match(call.prompt, /"specCommit":/);
+        assert.match(call.prompt, /"planCommit":/);
+    }
     assert.match(h.calls.find((c) => c.label === "Ship").prompt, /rollback/i);
 });
 
@@ -292,5 +303,60 @@ test("hard runtime failures propagate instead of becoming successful reports", a
         return agent(prompt, options);
     };
     await assert.rejects(() => lifecycle.run(h.ctx), /workflow_limit_reached/);
-    assert.equal(h.calls.at(-1).label, "Plan");
+    assert.equal(h.calls.at(-1).label, "Commit:plan");
+});
+
+test("spec and plan commits happen only after their own approvals", async () => {
+    const h = harness();
+    await approveSpec(h);
+    assert.equal(h.calls.some((c) => c.label.startsWith("Commit:")), false);
+    await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan/);
+    assert.equal(h.calls.some((c) => c.label === "Commit:spec"), true);
+    assert.equal(h.calls.some((c) => c.label === "Commit:plan"), false);
+    await lifecycle.run(h.ctx);
+    for (const label of ["Commit:spec", "Commit:plan", "Build:first", "Build:second"]) {
+        const call = h.calls.find((c) => c.label === label);
+        assert.match(call.prompt, /agent-skills:git-workflow-and-versioning/);
+        assert.match(call.prompt, /git diff --cached/);
+        assert.match(call.prompt, /baseline/);
+        assert.match(call.prompt, /Do not use git add -A/);
+        assert.ok(call.schema.required.includes("commit"));
+        assert.match(call.prompt, /session-baseline.json/);
+    }
+});
+
+test("commits require an explicit pre-edit baseline handoff", async () => {
+    const h = harness({}, { goal: "Feature", specPath: "SPEC.md" });
+    await assert.rejects(() => lifecycle.run(h.ctx), /baselinePath/);
+    assert.equal(h.calls.length, 0);
+    assert.ok(lifecycle.meta.argsSchema.required.includes("baselinePath"));
+});
+
+test("a missing or unsuccessful commit prevents the next phase or task", async () => {
+    for (const phase of ["Commit:spec", "Commit:plan", "Build:first"]) {
+        for (const value of [
+            null, report(), report({ commit: "" }), report({ commit: "not-a-sha" }),
+            report({ status: "blocked", commit }),
+            report({ commit, checks: [{ ...check, outcome: "failed" }] }),
+        ]) {
+            const h = harness({ [phase]: value });
+            if (phase === "Commit:spec") await approveSpec(h);
+            else await approvePlan(h);
+            const result = await lifecycle.run(h.ctx);
+            assert.equal(result.verdict, "NO-GO");
+            assert.equal(result.phase, phase);
+            assert.equal(h.calls.at(-1).label, phase);
+        }
+    }
+});
+
+test("read-only phases cannot commit or modify implementation", async () => {
+    const h = harness();
+    await approvePlan(h);
+    await lifecycle.run(h.ctx);
+    for (const label of ["Define", "Plan", "Verify", "Review:code", "Review:security", "Review:tests", "Ship"]) {
+        assert.match(h.calls.find((c) => c.label === label).prompt, /Only Commit:spec, Commit:plan and Build may create commits/);
+    }
+    assert.match(h.calls.find((c) => c.label === "Build:first").prompt,
+        /verification.*record.*completion.*commit/i);
 });

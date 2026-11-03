@@ -109,6 +109,13 @@ Assert-Check 'Lifecycle passes a prepared spec and routes all worker input to th
     $lifecycle.Contains('Review and Ship') -and
     $lifecycle.Contains('Do not auto-approve.')
 )
+Assert-Check 'Lifecycle requires approved atomic commits with an explicit baseline handoff' (
+    $lifecycle.Contains('agent-skills:git-workflow-and-versioning') -and
+    $lifecycle.Contains('git diff --cached') -and
+    $lifecycle.Contains('"baselinePath"') -and
+    $lifecycle.Contains('commits each verified task separately') -and
+    $lifecycle -notmatch 'leaves all changes uncommitted|Do not commit, push'
+)
 
 if ($failures) { throw "$failures command checks failed." }
 if (-not $Runtime) { return }
@@ -135,7 +142,7 @@ try {
         $LASTEXITCODE -eq 2 -and
         ($workflowOutput -join "`n").Contains('Invalid arguments for dynamic workflow "addy-lifecycle".')
     )
-    $preflightOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run addy-lifecycle --args '{"goal":"Preflight only","specPath":"tests\\fixtures\\nonexistent-lifecycle-spec.md"}' 2>&1
+    $preflightOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run addy-lifecycle --args '{"goal":"Preflight only","specPath":"tests\\fixtures\\nonexistent-lifecycle-spec.md","baselinePath":"session-baseline.json"}' 2>&1
     Assert-Check 'Installed workflow rejects a missing spec without spawning model tasks' (
         $LASTEXITCODE -eq 0 -and
         ($preflightOutput -join "`n").Contains('"verdict":"NO-GO"') -and

@@ -17,7 +17,19 @@ dependency; do not silently substitute a generic workflow.
 ## Prepare with the user
 
 Read repository instructions and relevant context. Respect current permissions and
-preserve pre-existing work and the index. Do not commit, push, merge, or deploy.
+preserve pre-existing work and the index. Do not push, merge, or deploy.
+Follow the installed `agent-skills:git-workflow-and-versioning` skill and repository
+git conventions. Commits are required save points, not optional release operations.
+If that skill is unavailable, stop and report the missing dependency.
+
+Before any spec or planning edits, record the pre-edit working-tree and index baseline
+using `git status --porcelain`, `git diff` and `git diff --cached`, including any relevant
+untracked-file content. Save the baseline in a session artifact outside committed
+repository content; never put secrets in documentation or commit them. Pass its path as
+`baselinePath` so every commit worker can read it. Preserve this baseline through plan
+revisions and new runs; do not reclassify unrelated user work as workflow-owned changes.
+If an existing spec/plan has uncommitted changes whose ownership cannot be established,
+ask the user before treating those changes as approved workflow content.
 
 Ask clarifying questions one at a time using `ask_user` in this main conversation.
 Do not delegate requirements discovery or assume that a workflow worker can ask the
@@ -40,11 +52,14 @@ Plan, Tasks or Implement phases.
 Present the spec and get explicit user approval using `ask_user`. Do not treat
 delegation, silence, hedged agreement or approval of intent as approval of the spec.
 Record agreed requirements, boundaries and decisions in the spec without secrets.
+Explain that the workflow commits the approved spec after its validation/approval gate,
+then the approved plan/task artifacts, and each verified Build task with its status update.
+The main session must not duplicate those workflow-owned commits.
 
 ## Run and coordinate
 
 Only after preparation and spec approval, run the `addy-lifecycle` dynamic
-workflow with `{ "goal": "<confirmed scope>", "specPath": "<worktree-relative spec path>" }`.
+workflow with `{ "goal": "<confirmed scope>", "specPath": "<worktree-relative spec path>", "baselinePath": "<session baseline artifact path>" }`.
 If dynamic workflows are unavailable, stop and report that limitation.
 
 The workflow validates the existing spec without conducting another interview, then
@@ -57,7 +72,7 @@ At `approve-plan`, inspect the full plan, dependencies, acceptance criteria and
 verification commands. Present the plan to the user before any build and explicitly
 invite feedback using `ask_user`, with choices to approve, request changes, or stop.
 Explain that approval runs the finite task set sequentially without between-task
-checkpoints and leaves all changes uncommitted. Only explicit approval authorizes
+checkpoints and commits each verified task separately. Only explicit approval authorizes
 resuming that exact run. Do not auto-approve.
 
 If the user requests changes, keep the old run paused and do not start building.
@@ -72,7 +87,7 @@ If the user chooses to stop, leave the artifacts intact and do not resume.
 Rejected or revised spec likewise requires a new run, not stale journaled output.
 
 Each worker is non-interactive. For **every phase** (Define, Plan, Build, Verify,
-Review and Ship), inspect the workflow result and its reports. If `needsInput`
+Review and Ship), including Commit:spec and Commit:plan, inspect the workflow result and its reports. If `needsInput`
 contains questions, ask them one at a time with `ask_user` here, keeping the source
 phase and context. If a blocked report omits a usable question, explain its blocker
 and ask for the specific missing decision when one is needed. A missing skill,
@@ -87,5 +102,6 @@ blindly. Runtime-paused/error runs may be resumed only after inspecting their ac
 status and approved scope; do not blindly retry cancelled runs or partially edited tasks.
 
 Review final verification and specialist findings with the user. GO means a
-launch-readiness assessment only, never approval to commit, push, merge, deploy,
-change feature flags, accept risk or execute rollback. Missing evidence is not a pass.
+launch-readiness assessment only, never approval for additional commits, pushes, merges,
+deployment, feature-flag changes, risk acceptance or rollback. Missing evidence is not a pass.
+The spec, plan and task commits are earned at their own earlier gates, not by GO.
