@@ -17,6 +17,7 @@ $skills = [ordered]@{
 }
 $failures = 0
 $descriptions = @{}
+$packagedSkills = @('git-conventions', 'readme-conventions')
 
 function Assert-Check([string]$Name, [bool]$Condition) {
     if ($Condition) {
@@ -38,6 +39,10 @@ Assert-Check 'Exactly the nine upstream commands are packaged' (
     $files.Count -eq $skills.Count -and
     -not (Compare-Object @($skills.Keys) @($files.BaseName))
 )
+$skillDirectories = @(Get-ChildItem -LiteralPath (Join-Path $root 'skills') -Directory)
+Assert-Check 'Packaged skills contain only the plugin conventions skills' (
+    -not (Compare-Object $packagedSkills @($skillDirectories.Name))
+)
 
 foreach ($name in $skills.Keys) {
     $path = Join-Path $directory "$name.md"
@@ -58,6 +63,21 @@ $license = Join-Path $directory 'LICENSE'
 Assert-Check 'Upstream MIT notice is retained' (
     (Test-Path -LiteralPath $license) -and
     (Get-Content -LiteralPath $license -Raw).Contains('Copyright (c) 2025 Addy Osmani')
+)
+
+$build = Get-Content -LiteralPath (Join-Path $directory 'build.md') -Raw
+Assert-Check 'Build preserves the working-tree and index baseline in both modes' (
+    $build.Contains('Before editing in either mode') -and $build.Contains('git diff --cached') -and
+    $build.Contains("preserving the user's index and working tree")
+)
+Assert-Check 'Build records completion before its optional commit' (
+    $build -match '7\. Record the verified task''s completion[\s\S]*8\. If explicitly authorized to commit' -and
+    $build.Contains('build -> record completion -> optional authorized commit')
+)
+$spec = Get-Content -LiteralPath (Join-Path $directory 'spec.md') -Raw
+Assert-Check 'Spec approval does not authorize commits recommended by its skill' (
+    $spec.Contains('Do not commit or push unless explicitly authorized') -and
+    $spec.Contains('even if the invoked skill recommends committing the spec')
 )
 
 if ($failures) { throw "$failures command checks failed." }
@@ -126,8 +146,12 @@ try {
     foreach ($name in @('plan', 'review')) {
         Assert-Check "Built-in /$name remains separate" (@($commands | Where-Object name -eq $name).Count -eq 1)
     }
-    Assert-Check 'Isolated install does not bundle Addy skills' (
-        @($commands | Where-Object name -like 'agent-skills:*').Count -eq 0
+    $registeredSkills = @($commands | Where-Object {
+        $_.name -like "$($manifest.name):*" -and
+        $_.name -notin @($skills.Keys | ForEach-Object { "$($manifest.name):$_" })
+    } | ForEach-Object { $_.name.Substring($manifest.name.Length + 1) })
+    Assert-Check 'Isolated install registers only the plugin conventions skills' (
+        -not (Compare-Object $packagedSkills $registeredSkills)
     )
 }
 finally {

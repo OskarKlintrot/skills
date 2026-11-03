@@ -17,3 +17,5 @@ Then generate a structured spec covering all six core areas: objective, commands
 If the request bundles several independently testable capabilities, first propose a capability map (module ids, dependency direction, build order) per the skill's Phase 0 and get it approved, then spec each module in dependency order.
 
 Save the spec as `SPEC.md` in the project root, or the repository's established spec location. If an existing spec covers different or unfinished work, ask before replacing it. Confirm the spec with the user before proceeding to implementation.
+
+Do not commit or push unless explicitly authorized, even if the invoked skill recommends committing the spec. Approval of the spec does not authorize Git operations.

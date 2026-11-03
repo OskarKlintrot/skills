@@ -13,6 +13,8 @@ Use the text following this command as the mode and task scope. Treat a first ar
 
 Read the repository's instructions and respect existing session permissions. Do not create branches, stash, reset, commit, push, or deploy without explicit authorization for that action. Approval to implement a plan is not approval to commit it.
 
+Before editing in either mode, record the working-tree and index baseline (`git status --porcelain`, `git diff`, and `git diff --cached`). Preserve pre-existing edits and staged changes. For authorized commits, include only the task's changes relative to that baseline, not entire files containing user edits or unrelated staged entries. If those changes cannot be separated safely while preserving the user's index and working tree, stop and ask.
+
 ## Default: one task
 
 Pick the next pending task from the plan. Then:
@@ -23,8 +25,8 @@ Pick the next pending task from the plan. Then:
 4. Implement the minimum code to pass the test (GREEN)
 5. Run the repository's regression test suite
 6. Run the build and applicable type/lint checks
-7. If explicitly authorized to commit, stage only this task's files and commit with a descriptive message; otherwise leave the verified changes uncommitted
-8. Mark the task complete and stop
+7. Record the verified task's completion in the task list
+8. If explicitly authorized to commit, include only this task's changes and completion update relative to the baseline and commit with a descriptive message; otherwise leave the verified changes uncommitted. Stop in single-task mode.
 
 ## Whole plan (`/oskar-tools:build auto`)
 
@@ -34,7 +36,7 @@ Use this once a spec exists and you want to collapse plan + build into one run. 
 2. **Establish a baseline.** Inspect `git status --porcelain` and relevant diffs. Preserve existing work. If existing changes conflict with the plan, or cannot be separated safely for authorized per-task commits, stop and ask how to handle them. Do not stash, reset, or absorb unrelated files.
 3. **Plan if needed.** Use the repository's existing plan and task list, defaulting to `tasks/plan.md` and `tasks/todo.md`. If no plan exists, invoke `agent-skills:planning-and-task-breakdown` to generate one. If a required skill is unavailable, stop and report it. Do not overwrite unfinished plans for different work.
 4. **Single checkpoint.** Present the full plan and wait for an unambiguous affirmative (e.g. "approve", "go", "yes"), using the available question or plan-approval surface. Treat hedged responses as not approved. If the session's permissions do not permit implementation, stop for the user's mode or permission decision rather than bypassing it. Commit newly generated planning documents separately only if commits were explicitly authorized.
-5. **Execute every task in dependency order.** Use declared dependencies; if missing or contradictory, resolve them before execution rather than inferring dependencies from list order. For each task, run the default loop above (RED -> GREEN -> regression -> build -> optional authorized commit -> mark complete). Stage only files for that task plus its status update; never blindly use `git add -A`.
+5. **Execute every task in dependency order.** Use declared dependencies; if missing or contradictory, resolve them before execution rather than inferring dependencies from list order. For each task, run the default loop above (RED -> GREEN -> regression -> build -> record completion -> optional authorized commit), continuing to the next task in whole-plan mode. Include only that task's changes plus its status update relative to the baseline; never blindly use `git add -A`.
 6. **Stop and ask the user** when:
    - a test cannot be made to pass or the build breaks without an obvious fix - follow `agent-skills:debugging-and-error-recovery`
    - the spec is ambiguous, or a task needs a decision the spec does not cover
