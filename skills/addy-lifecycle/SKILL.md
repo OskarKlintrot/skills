@@ -1,9 +1,12 @@
 ---
-description: Prepare a spec interactively, then coordinate the approved engineering lifecycle dynamic workflow
+name: addy-lifecycle
+description: Start the Addy engineering lifecycle from a feature idea or existing spec. Use when asked to run addy-lifecycle or coordinate requirements, spec, plan feedback, approved building, verification, specialist review and launch-readiness assessment.
 ---
 
-This command runs in the **main conversation**, not a subagent. Use the text following
-the command as the feature or existing spec to work on. The main conversation owns
+# Addy lifecycle
+
+This skill runs in the **main conversation**, not a subagent. Use the user's request
+as the feature or existing spec to work on. The main conversation owns
 all questions, interviews, confirmations, risk decisions and workflow approvals.
 
 Use the installed `agent-skills:spec-driven-development` skill for the specification
@@ -40,7 +43,7 @@ Record agreed requirements, boundaries and decisions in the spec without secrets
 
 ## Run and coordinate
 
-Only after preparation and spec approval, run the `engineering-lifecycle` dynamic
+Only after preparation and spec approval, run the `addy-lifecycle` dynamic
 workflow with `{ "goal": "<confirmed scope>", "specPath": "<worktree-relative spec path>" }`.
 If dynamic workflows are unavailable, stop and report that limitation.
 
@@ -51,10 +54,22 @@ resuming this checkpoint; otherwise obtain approval with `ask_user` first. Never
 infer approval just because a checkpoint is paused or a worker claims it was approved.
 
 At `approve-plan`, inspect the full plan, dependencies, acceptance criteria and
-verification commands. Explain that approval runs the finite task set sequentially
-without between-task checkpoints and leaves all changes uncommitted. Get explicit
-user approval using `ask_user`, then resume that exact run. Rejected or revised spec
-or plan requires a new run, not resume of stale journaled output. Do not auto-approve.
+verification commands. Present the plan to the user before any build and explicitly
+invite feedback using `ask_user`, with choices to approve, request changes, or stop.
+Explain that approval runs the finite task set sequentially without between-task
+checkpoints and leaves all changes uncommitted. Only explicit approval authorizes
+resuming that exact run. Do not auto-approve.
+
+If the user requests changes, keep the old run paused and do not start building.
+Discuss the feedback in this main conversation, revise the plan and task artifacts,
+and present the revised plan for further feedback until the user explicitly approves.
+Do not overwrite unrelated work. Start a new `addy-lifecycle` run because the old
+plan report is journaled; never resume the old run with changed files. At the new
+plan checkpoint, compare the generated plan with the user's requested revisions
+and approved plan. If it differs, present it again and obtain explicit approval
+before resuming. Approval is always for the exact current plan, never future revisions.
+If the user chooses to stop, leave the artifacts intact and do not resume.
+Rejected or revised spec likewise requires a new run, not stale journaled output.
 
 Each worker is non-interactive. For **every phase** (Define, Plan, Build, Verify,
 Review and Ship), inspect the workflow result and its reports. If `needsInput`

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { test } from "node:test";
-import { lifecycle } from "../com.github.copilot/extensions/lifecycle/workflow.mjs";
+import { lifecycle } from "../com.github.copilot/extensions/addy-lifecycle/workflow.mjs";
 
 const check = { command: "npm test", outcome: "passed", evidence: "All tests passed" };
 const task = (id, dependsOn = []) => ({ id, title: id, acceptance: "Works", dependsOn });
@@ -94,6 +94,11 @@ test("a goal alone cannot start unattended requirements discovery", async () => 
     await assert.rejects(() => lifecycle.run(h.ctx), /specPath/);
     assert.equal(h.calls.length, 0);
     assert.ok(lifecycle.meta.argsSchema.required.includes("specPath"));
+});
+
+test("workflow uses the same public name as its coordinator skill and command", () => {
+    assert.equal(lifecycle.meta.name, "addy-lifecycle");
+    assert.match(lifecycle.meta.description, /\/oskar-tools:addy-lifecycle/);
 });
 
 test("missing spec files, directories and paths outside the worktree stop before any phase agent", async () => {

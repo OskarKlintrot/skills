@@ -128,10 +128,10 @@ async function loadSpec(specPath) {
 
 export const lifecycle = {
     meta: {
-        name: "engineering-lifecycle",
+        name: "addy-lifecycle",
         description: "Validate a spec prepared interactively in the main session -> plan -> approved " +
             "sequential build loop -> verify -> specialist review -> launch-readiness decision. " +
-            "Use /oskar-tools:lifecycle for requirements dialogue first. Pauses after spec and plan; " +
+            "Use /oskar-tools:addy-lifecycle for requirements dialogue first. Pauses after spec and plan; " +
             "never resume without explicit user approval. Workers cannot conduct interviews. " +
             "Never deploys or commits. Requires installed Addy agent-skills. args: { goal: string, specPath: string }.",
         phases: ["Define", "Plan", "Build", "Verify", "Review", "Ship"].map((title) => ({ title })),
@@ -143,7 +143,7 @@ export const lifecycle = {
     run: async (ctx) => {
         if (!nonempty(ctx.args?.goal)) throw new Error("goal must be a non-empty string.");
         if (!nonempty(ctx.args.specPath)) {
-            throw new Error("specPath is required. Prepare the spec interactively using /oskar-tools:lifecycle first.");
+            throw new Error("specPath is required. Prepare the spec interactively using /oskar-tools:addy-lifecycle first.");
         }
         const reports = {};
         const stop = (phase, reason) => {

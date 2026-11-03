@@ -8,7 +8,7 @@ $skills = [ordered]@{
     'build' = 'incremental-implementation'
     'code-simplify' = 'code-simplification'
     'constraints' = 'constraint-driven-development'
-    'lifecycle' = 'spec-driven-development'
+    'addy-lifecycle' = 'addy-lifecycle'
     'plan' = 'planning-and-task-breakdown'
     'review' = 'code-review-and-quality'
     'ship' = 'shipping-and-launch'
@@ -18,7 +18,7 @@ $skills = [ordered]@{
 }
 $failures = 0
 $descriptions = @{}
-$packagedSkills = @('git-conventions', 'readme-conventions')
+$packagedSkills = @('addy-lifecycle', 'git-conventions', 'readme-conventions')
 
 function Assert-Check([string]$Name, [bool]$Condition) {
     if ($Condition) {
@@ -41,7 +41,7 @@ Assert-Check 'Exactly the ten documented commands are packaged' (
     -not (Compare-Object @($skills.Keys) @($files.BaseName))
 )
 $skillDirectories = @(Get-ChildItem -LiteralPath (Join-Path $root 'skills') -Directory)
-Assert-Check 'Packaged skills contain only the plugin conventions skills' (
+Assert-Check 'Packaged skills contain the lifecycle coordinator and conventions skills' (
     -not (Compare-Object $packagedSkills @($skillDirectories.Name))
 )
 
@@ -53,7 +53,8 @@ foreach ($name in $skills.Keys) {
     $header = [regex]::Match($content, '\A---\r?\ndescription: ([^\r\n]+)\r?\n---\r?\n')
     Assert-Check "$name has description-only Copilot command frontmatter" $header.Success
     if ($header.Success) { $descriptions[$name] = $header.Groups[1].Value }
-    Assert-Check "$name invokes its installed skill" ($content.Contains("agent-skills:$($skills[$name])"))
+    $skillProvider = if ($name -eq 'addy-lifecycle') { 'oskar-tools' } else { 'agent-skills' }
+    Assert-Check "$name invokes its installed skill" ($content.Contains("${skillProvider}:$($skills[$name])"))
     Assert-Check "$name reports missing skill dependencies" ($content -match '(?i)skill.*unavailable.*stop')
     Assert-Check "$name has no Claude runtime or plugin-cache assumptions" (
         $content -notmatch 'CLAUDE\.md|\.claude[/\\]|disable-model-invocation|subagent_type|Agent Teams|Agent tool|\$ARGUMENTS|installed-plugins[/\\]'
@@ -82,13 +83,24 @@ Assert-Check 'Spec preserves its upstream skill commit workflow' (
     $spec.Contains('agent-skills:spec-driven-development') -and
     $spec -notmatch 'Do not commit|does not authorize Git operations|even if the invoked skill recommends committing'
 )
-$lifecycle = Get-Content -LiteralPath (Join-Path $directory 'lifecycle.md') -Raw
+$lifecycle = Get-Content -LiteralPath (Join-Path $root 'skills' 'addy-lifecycle' 'SKILL.md') -Raw
+Assert-Check 'Addy lifecycle skill has discoverable metadata and starts its workflow' (
+    $lifecycle -match '\A---\r?\nname: addy-lifecycle\r?\ndescription: [^\r\n]+' -and
+    $lifecycle.Contains('run the `addy-lifecycle` dynamic') -and
+    -not (Test-Path -LiteralPath (Join-Path $directory 'lifecycle.md'))
+)
 Assert-Check 'Lifecycle prepares requirements in the main conversation with interview terminal gate' (
     $lifecycle.Contains('agent-skills:interview-me') -and
     $lifecycle.Contains('`ask_user` in this main conversation') -and
     $lifecycle.Contains('terminal-turn rule') -and
     $lifecycle.Contains('Do not write a spec') -and
     $lifecycle.Contains('same turn as intent confirmation')
+)
+Assert-Check 'Plan feedback keeps execution paused and requires approval of revised output' (
+    $lifecycle.Contains('choices to approve, request changes, or stop') -and
+    $lifecycle.Contains('keep the old run paused and do not start building') -and
+    $lifecycle.Contains('never resume the old run with changed files') -and
+    $lifecycle.Contains('If it differs, present it again and obtain explicit approval')
 )
 Assert-Check 'Lifecycle passes a prepared spec and routes all worker input to the user' (
     $lifecycle.Contains('"specPath"') -and
@@ -114,12 +126,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Isolated plugin installation failed: $installOutput" }
 
     # Invalid arguments exercise extension loading without invoking any model task.
-    $workflowOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run engineering-lifecycle --args '{"goal":"A goal without a prepared spec"}' 2>&1
+    $installedSkills = & copilot skill list 2>&1
+    Assert-Check 'Installed plugin discovers the addy-lifecycle skill' (
+        $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('addy-lifecycle')
+    )
+    $workflowOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run addy-lifecycle --args '{"goal":"A goal without a prepared spec"}' 2>&1
     Assert-Check 'Installed lifecycle workflow loads and enforces its argument schema' (
         $LASTEXITCODE -eq 2 -and
-        ($workflowOutput -join "`n").Contains('Invalid arguments for dynamic workflow "engineering-lifecycle".')
+        ($workflowOutput -join "`n").Contains('Invalid arguments for dynamic workflow "addy-lifecycle".')
     )
-    $preflightOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run engineering-lifecycle --args '{"goal":"Preflight only","specPath":"tests\\fixtures\\nonexistent-lifecycle-spec.md"}' 2>&1
+    $preflightOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run addy-lifecycle --args '{"goal":"Preflight only","specPath":"tests\\fixtures\\nonexistent-lifecycle-spec.md"}' 2>&1
     Assert-Check 'Installed workflow rejects a missing spec without spawning model tasks' (
         $LASTEXITCODE -eq 0 -and
         ($preflightOutput -join "`n").Contains('"verdict":"NO-GO"') -and
@@ -173,8 +189,13 @@ try {
 
     foreach ($name in $skills.Keys) {
         $registered = @($commands | Where-Object name -eq "$($manifest.name):$name")
+        $expectedDescription = $descriptions[$name]
+        # CLI exposes the skill rather than the adapter when their names coincide.
+        if ($name -eq 'addy-lifecycle') {
+            $expectedDescription = [regex]::Match($lifecycle, '(?m)^description: ([^\r\n]+)').Groups[1].Value
+        }
         Assert-Check "Installed plugin registers /$($manifest.name):$name with its description" (
-            $registered.Count -eq 1 -and $registered[0].description -eq $descriptions[$name]
+            $registered.Count -eq 1 -and $registered[0].description -eq $expectedDescription
         )
     }
     foreach ($name in @('plan', 'review')) {
@@ -184,8 +205,9 @@ try {
         $_.name -like "$($manifest.name):*" -and
         $_.name -notin @($skills.Keys | ForEach-Object { "$($manifest.name):$_" })
     } | ForEach-Object { $_.name.Substring($manifest.name.Length + 1) })
-    Assert-Check 'Isolated install registers only the plugin conventions skills' (
-        -not (Compare-Object $packagedSkills $registeredSkills)
+    $skillOnlyCommands = @($packagedSkills | Where-Object { $_ -notin $skills.Keys })
+    Assert-Check 'Isolated install registers skill commands without duplicating coordinator command' (
+        -not (Compare-Object $skillOnlyCommands $registeredSkills)
     )
 }
 finally {
