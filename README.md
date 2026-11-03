@@ -36,6 +36,14 @@ The skill's name and description let agents discover it for README work, includi
 
 Plugin installation needs no global directory mappings. For local development, the [global skills mapping](#global-development-mappings-on-windows) exposes the same skill without copying it; the `hooks` and `instructions` mappings are not needed for README conventions.
 
+## Engineering workflow commands
+
+`com.github.copilot\commands\*.md` contains Copilot command adapters of the nine Claude Code commands from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), version `0.6.14`. The MIT notice is retained in `com.github.copilot\commands\LICENSE`.
+
+Commands register with the plugin prefix: `/oskar-tools:spec`, `/oskar-tools:plan`, `/oskar-tools:build`, `/oskar-tools:test`, `/oskar-tools:review`, `/oskar-tools:code-simplify`, `/oskar-tools:constraints`, `/oskar-tools:ship`, and `/oskar-tools:webperf`. Pass arguments after the command. Bare `/plan` and `/review` remain Copilot's built-in commands.
+
+Install and enable Addy's `agent-skills` plugin separately for the referenced skills. `ship` additionally requires Copilot-exposed `code-reviewer`, `security-auditor`, and `test-engineer` custom agents; `webperf` requires `web-performance-auditor`. Addy's skills-only plugin installation does not expose those root agent definitions. Missing personas are reported rather than substituted. The global development mappings below do not load plugin commands; use plugin installation or a `--plugin-dir` mount, avoiding duplicate hook sources.
+
 ## Install
 
 Use a current GitHub Copilot CLI with Agent Plugins 1.0 support. Once these files are merged into the repository's default branch:

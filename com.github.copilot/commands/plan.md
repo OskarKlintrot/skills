@@ -1,13 +1,12 @@
 ---
 description: Break work into small verifiable tasks with acceptance criteria and dependency ordering
-disable-model-invocation: true
 ---
 
 Invoke the agent-skills:planning-and-task-breakdown skill.
 
 Read the existing spec (SPEC.md or equivalent) and the relevant codebase sections. Then:
 
-1. Enter plan mode — read only, no code changes
+1. Work in a planning-only phase — no implementation changes; respect Copilot's current runtime mode and permissions
 2. Identify the dependency graph between components
 3. Slice work vertically (one complete path per task, not horizontal layers)
 4. Write tasks with acceptance criteria and verification steps

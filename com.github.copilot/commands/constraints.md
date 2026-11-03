@@ -1,11 +1,10 @@
 ---
 description: Define and enforce this project's quality bar — interview, sane defaults, CONSTRAINTS.md
-disable-model-invocation: true
 ---
 
 Invoke the agent-skills:constraint-driven-development skill.
 
-$ARGUMENTS
+Use the text following this command as arguments.
 
 Default behaviour with no arguments: set up constraints for this repository.
 
@@ -23,11 +22,11 @@ Default behaviour with no arguments: set up constraints for this repository.
 
 5. **Place each check by cost.** Types, lint and secrets in the edit loop (seconds). Related tests and changed-line coverage at task end (under 90s). Everything else at review or in CI. Scope checks to the diff, not the whole repo.
 
-6. **Point the agent at it.** Add a line to CLAUDE.md telling agents to read CONSTRAINTS.md and never weaken it to make a change pass.
+6. **Point the agent at it.** Add a line to .github/copilot-instructions.md telling Copilot to read CONSTRAINTS.md and never weaken it to make a change pass.
 
 7. **Verify.** Run the constraints against the current branch. If anything fails that the user disagrees with, fix the constraint now rather than leaving a gate people will learn to ignore.
 
 Sub-commands:
-- `/constraints check` — run the current constraints against this branch and report
-- `/constraints guard` — inspect the diff for a weakened bar: lowered thresholds, skipped or deleted tests, new suppression comments, unfinished stubs, new exceptions
-- `/constraints ratchet` — record today's measured values as the floor that must not fall
+- `/oskar-tools:constraints check` — run the current constraints against this branch and report
+- `/oskar-tools:constraints guard` — inspect the diff for a weakened bar: lowered thresholds, skipped or deleted tests, new suppression comments, unfinished stubs, new exceptions
+- `/oskar-tools:constraints ratchet` — record today's measured values as the floor that must not fall

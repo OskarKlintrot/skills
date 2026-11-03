@@ -1,13 +1,12 @@
 ---
 description: Simplify code for clarity and maintainability — reduce complexity without changing behavior
-disable-model-invocation: true
 ---
 
 Invoke the agent-skills:code-simplification skill.
 
 Simplify recently changed code (or the specified scope) while preserving exact behavior:
 
-1. Read CLAUDE.md and study project conventions
+1. Read applicable AGENTS.md, .github/copilot-instructions.md, and path-specific instructions; study project conventions
 2. Identify the target code — recent changes unless a broader scope is specified
 3. Understand the code's purpose, callers, edge cases, and test coverage before touching it
 4. Scan for simplification opportunities:

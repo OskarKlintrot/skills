@@ -1,9 +1,8 @@
 ---
 description: Run a web performance audit via the web-performance-auditor persona
-disable-model-invocation: true
 ---
 
-`/webperf` targets web applications specifically. Do not use it for utility libraries, CLIs, or server-only code with no browser-facing output.
+`/oskar-tools:webperf` targets web applications specifically. Do not use it for utility libraries, CLIs, or server-only code with no browser-facing output.
 
 ## Determine the mode
 
@@ -19,7 +18,7 @@ disable-model-invocation: true
 
 ## Run the audit
 
-Spawn the `web-performance-auditor` subagent. Pass it explicitly:
+Invoke the `web-performance-auditor` custom agent using Copilot's available delegation tool. If that agent is not exposed, stop and report the missing agent; installing the skills plugin does not register its root agent definitions. Pass it explicitly:
 
 - The files, components, or diff under review
 - Any artifact paths (Lighthouse JSON, PSI JSON, CrUX response, trace) or pasted JSON content
