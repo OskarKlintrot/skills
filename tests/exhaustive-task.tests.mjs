@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -57,19 +57,20 @@ function harness(args, handler) {
                 throw new Error(`PAUSED:${key}`);
             }
         },
+        // Like the runtime journal, replays return fresh copies rather than objects the run mutated.
         async step(key, producer) {
-            if (!journal.has(key)) journal.set(key, await producer());
-            return journal.get(key);
+            if (!journal.has(key)) journal.set(key, structuredClone(await producer()));
+            return structuredClone(journal.get(key));
         },
         async agent(prompt, options) {
             const key = JSON.stringify({ prompt, options });
-            if (journal.has(key)) return journal.get(key);
+            if (journal.has(key)) return structuredClone(journal.get(key));
             const [role, round, attempt] = options.label.split(":");
             const call = { role, round: Number(round), attempt: Number(attempt), model: options.model, context: JSON.parse(prompt.split("Context (JSON):\n")[1]) };
             calls.push(call);
             const output = await handler(call);
             assert.ok(output, `Unexpected agent: ${options.label}`);
-            journal.set(key, output);
+            journal.set(key, structuredClone(output));
             return output;
         },
     };
@@ -179,7 +180,7 @@ test("final verification rejects findings, reopens the search and passes models 
     assert.deepEqual(h.calls.filter((call) => call.role === "Final").map((call) => call.round), [2, 4]);
     assert.ok(h.calls.every((call) => call.model === (call.role === "Final" ? "strong" : "cheap")));
     const ledger = await readFile(join(root, "ledger.md"), "utf8");
-    assert.match(ledger, /Rejected by final verification/);
+    assert.match(ledger, /Rejected by verification/);
     assert.doesNotMatch(ledger, /### Title fake-hit/);
 });
 
@@ -224,7 +225,10 @@ test("rounds that change files are verified and repaired; rejected findings stay
     const repair = h.calls.find((call) => call.role === "Work" && call.attempt === 2);
     assert.equal(repair.context.repair, "Inspect src/b.txt again");
     assert.deepEqual(result.findings.map((entry) => entry.id), ["real-hit"]);
-    assert.doesNotMatch(await readFile(f.args.ledgerPath, "utf8"), /fake-hit/);
+    assert.deepEqual(result.rejected, ["fake-hit"]);
+    const ledger = await readFile(f.args.ledgerPath, "utf8");
+    assert.match(ledger, /## Rejected by verification\s+- `fake-hit`/);
+    assert.doesNotMatch(ledger, /Title fake-hit/);
 });
 
 test("rounds block on uncovered batches, persistent verification failures and verifier mutations", async (t) => {
@@ -387,4 +391,133 @@ test("round ceilings pause for approval and block on edits made while paused", a
     const blocked = await edited.run();
     assert.equal(blocked.status, "blocked");
     assert.match(blocked.reason, /paused/);
+});
+
+test("a resumed round still verifies and commits its own edits", async (t) => {
+    const f = await filesFixture(t, 1, { batchSize: 1, quietRounds: 1 });
+    let crash = true;
+    const h = harness(f.args, defaultHandler({
+        Work: async ({ context }) => {
+            if (!context.batch.length) return undefined;
+            await writeFile(join(f.path, "src", "a.txt"), "cleaned\n");
+            return work(context.batch, [], ["src/a.txt: cleaned"]);
+        },
+        Commit: () => {
+            if (crash) {
+                crash = false;
+                throw new Error("interrupted");
+            }
+            git(f.path, "commit", "-qam", "refactor: clean batch");
+            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
+        },
+    }));
+    await assert.rejects(h.run, /interrupted/);
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.equal(result.commits.length, 1);
+    assert.equal(h.calls.filter((call) => call.role === "Verify").length, 1);
+    assert.equal(git(f.path, "status", "--porcelain"), "");
+});
+
+test("a blocked commit leaves the batch unprocessed for the next run", async (t) => {
+    const f = await filesFixture(t, 2, { batchSize: 1, quietRounds: 1 });
+    const blocked = await harness(f.args, defaultHandler({
+        Work: async ({ context }) => {
+            await writeFile(join(f.path, "src", "a.txt"), "changed\n");
+            return work(context.batch, [], ["src/a.txt: changed"]);
+        },
+        Commit: () => report({ status: "blocked", commits: [], uncommitted: [], questions: ["May I commit?"] }),
+    })).run();
+    assert.equal(blocked.phase, "Commit");
+    assert.match(await readFile(f.args.ledgerPath, "utf8"), /0\/2 units processed/);
+    git(f.path, "checkout", "--", "src/a.txt");
+    const next = harness(f.args, defaultHandler());
+    assert.equal((await next.run()).status, "complete");
+    assert.deepEqual(next.calls[0].context.batch, ["src/a.txt"]);
+});
+
+test("verification repairs replace a finding's title and details", async (t) => {
+    const root = await temp(t);
+    const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
+    let finals = 0;
+    const h = harness({
+        goal: "Find every ADO integration", acceptance: "All listed", mode: "search", paths: [path],
+        ledgerPath: join(root, "ledger.md"), quietRounds: 1,
+    }, defaultHandler({
+        Work: ({ round, context }) => {
+            if (round === 1) return work([], [finding("sdk", "a.cs:1")], [], "grep");
+            if (!context.repair) return undefined;
+            assert.equal(context.ledger.findings[0].details, "Details sdk");
+            return work([], [{ id: "sdk", title: "Corrected", locations: ["a.cs:1"], details: "Corrected details" }], [], "repair");
+        },
+        Final: () => finals++ ? undefined : report({ complete: false, remaining: "sdk is mislabeled", rejected: [] }),
+    }));
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.deepEqual(result.findings, [{ id: "sdk", title: "Corrected", locations: ["a.cs:1"], details: "Corrected details" }]);
+    assert.match(await readFile(join(root, "ledger.md"), "utf8"), /Corrected details/);
+});
+
+test("resuming after rounds deleted every scoped file replays preparation", async (t) => {
+    const f = await filesFixture(t, 2, { batchSize: 2, quietRounds: 1, maxRounds: 1 });
+    const h = harness(f.args, defaultHandler({
+        Work: ({ context }) => {
+            if (!context.batch.length) return undefined;
+            git(f.path, "rm", "-q", "src/a.txt", "src/b.txt");
+            return work(context.batch, [], ["removed src"]);
+        },
+        Commit: () => {
+            git(f.path, "commit", "-qm", "refactor: remove src");
+            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
+        },
+    }));
+    await assert.rejects(h.run, /PAUSED:round-limit-v2:1/);
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+});
+
+test("resuming after a final rejection rewrote an in-repo ledger is allowed", async (t) => {
+    const root = await temp(t);
+    const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
+    inside(path);
+    let finals = 0;
+    const h = harness({
+        goal: "Find every ADO integration", acceptance: "All listed", mode: "search", paths: [path],
+        ledgerPath: join(path, "ledger.md"), quietRounds: 1, maxRounds: 2,
+    }, defaultHandler({
+        Work: ({ round }) => round === 1 ? work([], [finding("x", "app.ts:1"), finding("y", "app.ts:1")], [], "grep") : undefined,
+        Commit: () => {
+            git(path, "add", "-A");
+            git(path, "commit", "-qm", "docs: update ledger");
+            return report({ commits: [{ repo: path, commit: git(path, "rev-parse", "HEAD") }], uncommitted: [] });
+        },
+        Final: () => finals++ ? undefined : report({ complete: false, remaining: "Look again", rejected: ["y"] }),
+    }));
+    await assert.rejects(h.run, /PAUSED:round-limit-v2:2/);
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.deepEqual(result.findings.map((entry) => entry.id), ["x"]);
+});
+
+test("files scope matches case-insensitively on Windows", { skip: process.platform !== "win32" }, async (t) => {
+    const f = await filesFixture(t, 2, { paths: ["SRC"], batchSize: 2, quietRounds: 1 });
+    const h = harness(f.args, defaultHandler());
+    assert.equal((await h.run()).status, "complete");
+    assert.deepEqual(h.calls[0].context.batch, ["src/a.txt", "src/b.txt"]);
+});
+
+test("files behind symlinked or junctioned directories are not units", async (t) => {
+    const f = await filesFixture(t, 1, { quietRounds: 1 });
+    await mkdir(join(f.path, "src", "dir"));
+    await writeFile(join(f.path, "src", "dir", "x.txt"), "x\n");
+    git(f.path, "add", "-A");
+    git(f.path, "commit", "-qm", "add dir");
+    const outside = join(f.root, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "x.txt"), "outside\n");
+    await rm(join(f.path, "src", "dir"), { recursive: true });
+    await symlink(outside, join(f.path, "src", "dir"), "junction");
+    const h = harness(f.args, defaultHandler());
+    assert.equal((await h.run()).status, "complete");
+    assert.deepEqual(h.calls[0].context.batch, ["src/a.txt"]);
 });
