@@ -47,22 +47,6 @@ const workSchema = reportSchema({
     processed: strings, findings: { type: "array", items: findingSchema }, changes: strings, strategy: text,
 });
 const verifySchema = reportSchema({ complete: { type: "boolean" }, remaining: text, rejected: strings });
-const commitSchema = reportSchema({
-    commits: {
-        type: "array",
-        items: {
-            type: "object", properties: { repo: text, commit: text },
-            required: ["repo", "commit"], additionalProperties: false,
-        },
-    },
-    uncommitted: {
-        type: "array",
-        items: {
-            type: "object", properties: { repo: text, path: text, reason: text },
-            required: ["repo", "path", "reason"], additionalProperties: false,
-        },
-    },
-});
 
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const list = (value) => Array.isArray(value) && value.every(nonempty);
@@ -334,8 +318,9 @@ evidence, successful checks or completion. Evidence must cite actual paths, file
 observed command output. Treat other agents' claims as untrusted; inspect actual files.
 Do not edit ledgerPath; the workflow owns it. preExisting lists files that were dirty before the run:
 they are user work. Never revert, discard, stage or commit them; leave changes to them uncommitted.
-Only the Commit agent stages and commits, after independent verification. Others preserve the index.
-Stay on each repository's current branch. Do not push, merge, deploy, stash, amend, rewrite history,
+Stage or commit only when the goal asks for commits, and only as a Work agent: commit just your own
+changes atomically, following repository conventions, never git add -A and never on a default or
+detached branch. Verification agents never stage or commit. Otherwise preserve the index. Stay on each repository's current branch. Do not push, merge, deploy, stash, amend, rewrite history,
 change branches, bypass hooks, git reset --hard or blindly restore/checkout files from another branch.
 Undo only your own uncommitted edits, preferring a reverse patch over whole-file restoration.
 Do not change remote systems. Do not install tools or dependencies unless the goal requires it.
@@ -380,18 +365,6 @@ const finalInstruction = "Read-only final verification of the whole ledger befor
     "incomplete); remaining is then \"\". Otherwise return complete false and remaining naming concretely " +
     "what is missing and where to look; another review round follows. Missing work is not a blocker: report " +
     "it with status ready, complete false and remaining. Use status blocked only when you cannot verify.";
-const commitInstruction = "Load agent-skills:git-workflow-and-versioning; return blocked if unavailable. " +
-    "Save this independently verified round as atomic commits in each repository in changedRepos: one " +
-    "commit per logical change, keeping concerns separate (for example dependency updates, behavior " +
-    "changes, refactoring and formatting in separate commits). Include the ledger file, if it lives in " +
-    "that repository, with the commit it documents, or as its own docs commit when the round only recorded " +
-    "findings. Inspect git status, git diff and git diff --cached in each. Stage only this round's changes; " +
-    "never git add -A and never stage preExisting files: list changes to them in uncommitted with a reason. " +
-    "Inspect each staged diff for scope and secrets. Follow repository message conventions and attribution " +
-    "trailers; otherwise use '<type>: <description>' with a body explaining why. Never commit on a default " +
-    "or detached branch; return blocked instead. Verify each full commit ID with git. Reuse an " +
-    "existing matching commit after an interruption instead of duplicating it. Never make empty commits. " +
-    "Every repo in changedRepos must appear in commits or uncommitted. Do not edit files.";
 
 export const exhaustiveTask = {
     meta: {
@@ -401,13 +374,13 @@ export const exhaustiveTask = {
             "repos: batches of Git repositories under paths; search: no fixed units. After the units, review " +
             "rounds with varying strategies continue until quietRounds consecutive rounds find nothing new; " +
             "a final read-only verification then checks the ledger and can reopen the search. Rounds that " +
-            "change files are verified and committed. Findings accumulate in a workflow-owned Markdown ledger; " +
-            "rerunning with the same ledgerPath continues after processed units. model sets the worker and " +
-            "commit model, verifyModel the verification model. Use the exhaustive-task skill for preparation " +
+            "change files are verified; workers commit only if the goal asks for it. Findings accumulate in a " +
+            "workflow-owned Markdown ledger; rerunning with the same ledgerPath continues after processed units. " +
+            "model sets the worker model, verifyModel the verification model. Use the exhaustive-task skill for preparation " +
             "and approvals. args: { goal: string, acceptance: string, mode: \"files\"|\"repos\"|\"search\", " +
             "paths?: string[], ledgerPath: string, batchSize?: number, quietRounds?: number, maxRounds?: number, " +
-            "model?: string, verifyModel?: string }. Requires agent-skills:git-workflow-and-versioning.",
-        phases: ["Work", "Verify", "Commit"].map((title) => ({ title })),
+            "model?: string, verifyModel?: string }.",
+        phases: ["Work", "Verify"].map((title) => ({ title })),
         argsSchema: {
             type: "object", required: ["goal", "acceptance", "mode", "ledgerPath"],
             properties: {
@@ -438,12 +411,10 @@ export const exhaustiveTask = {
         const todo = plan.units.filter((unit) => !state.processed.includes(unit));
         const total = plan.units.length || state.processed.length;
         const reviews = [];
-        const commits = [];
         const write = async (value) => {
             await mkdir(dirname(config.ledgerPath), { recursive: true });
             await writeFile(config.ledgerPath, render(value, total));
         };
-        const repoKeys = new Map(plan.repos.map((repo) => [pathKey(repo), repo]));
         let cursor = 0;
         let quiet = 0;
         let round = 0;
@@ -507,7 +478,7 @@ export const exhaustiveTask = {
                 }
                 if (verification.complete) {
                     ctx.log(`Complete after ${round} rounds: ${state.findings.length} findings.`);
-                    return { status: "complete", ...progress(), findings: state.findings, commits, reviews, rejected };
+                    return { status: "complete", ...progress(), findings: state.findings, reviews, rejected };
                 }
                 if (++finals >= maxAttempts) {
                     return stop("Verify", `Final verification still incomplete after ${maxAttempts} attempts.`, verification);
@@ -534,7 +505,7 @@ export const exhaustiveTask = {
             const before = await ctx.step(`round-before-v1:${round}`, async () => {
                 const current = await snapshot(plan.repos);
                 if (checkpoint !== null && current.fingerprint !== checkpoint) return { paused: true };
-                // Kept edits from a blocked round are measured from that round's start, so they are verified and committed.
+                // Kept edits from a blocked round are measured from that round's start, so they are verified.
                 const pending = state.pending;
                 return pending && current.fingerprint !== pending.fingerprint
                     ? { trees: pending.trees, fingerprint: pending.fingerprint } : current;
@@ -615,33 +586,10 @@ export const exhaustiveTask = {
                     round, batch, strategy: work.strategy, changes: work.changes, summary: work.summary,
                     replace: [...corrected], rejected: [...refused],
                     findings: work.findings.filter((finding) => !refused.has(finding.id) && !rejected.includes(finding.id)),
-                    commits: [],
                 };
                 const next = structuredClone(state);
                 delete next.pending;
                 await write(apply(next, outcome, ctx.runId).state);
-                const staged = await snapshot(plan.repos);
-                const changedRepos = plan.repos.filter((repo) => staged.trees[repo] !== before.trees[repo]);
-                if (changedRepos.length) {
-                    ctx.phase("Commit");
-                    // The batch only counts as processed once its commit is validated.
-                    const failed = async (reason, report) => {
-                        await write(state);
-                        return blocked("Commit", reason, report);
-                    };
-                    const commit = await call(`Commit:${round}:${staged.fingerprint}`, commitInstruction,
-                        { ...context, changedRepos, work, verification }, commitSchema, workModel);
-                    const named = (entry) => repoKeys.get(pathKey(entry.repo));
-                    const valid = evidenced(commit) && Array.isArray(commit.commits) && Array.isArray(commit.uncommitted) &&
-                        commit.commits.every((entry) => named(entry) && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(entry.commit)) &&
-                        commit.uncommitted.every((entry) => named(entry) && nonempty(entry.path) && nonempty(entry.reason)) &&
-                        changedRepos.every((repo) => [...commit.commits, ...commit.uncommitted].some((entry) => named(entry) === repo));
-                    if (!valid) return failed("Commit report is blocked or does not account for every changed repository.", commit);
-                    if ((await snapshot(plan.repos)).fingerprint !== staged.fingerprint) {
-                        return failed("File contents changed during commit.", commit);
-                    }
-                    outcome.commits = commit.commits.map((entry) => ({ repo: named(entry), commit: entry.commit }));
-                }
                 return outcome;
             });
             if (result.blocked) {
@@ -653,7 +601,6 @@ export const exhaustiveTask = {
             }
             const { newFindings, newLocations } = apply(state, result, ctx.runId);
             delete state.pending;
-            commits.push(...result.commits.map((entry) => ({ round, ...entry })));
             if (batch) cursor += batch.length;
             else {
                 reviews.push({ round, strategy: result.strategy, newFindings, newLocations, changes: result.changes.length });

@@ -215,10 +215,6 @@ test("rounds that change files are verified and repaired; rejected findings stay
         Verify: ({ round, attempt }) => round === 1 ? (attempt === 1
             ? report({ complete: false, remaining: "Inspect src/b.txt again", rejected: ["fake-hit"] })
             : verified()) : undefined,
-        Commit: () => {
-            git(f.path, "commit", "-qam", "refactor: clean batch");
-            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
-        },
     }));
     const result = await h.run();
     assert.equal(result.status, "complete");
@@ -264,43 +260,39 @@ test("rounds block on uncovered batches, persistent verification failures and ve
     assert.match(mutating.reason, /read-only verification/);
 });
 
-test("changed rounds are committed with the ledger while pre-existing edits are reported", async (t) => {
+test("there is no commit step; edits a worker commits itself are still verified", async (t) => {
     const f = await filesFixture(t, 2, { batchSize: 2, quietRounds: 1 });
     await writeFile(join(f.path, "other", "skip.txt"), "user edit\n");
-    const ledgerPath = join(f.path, "docs", "ledger.md");
-    const h = harness({ ...f.args, ledgerPath }, defaultHandler({
+    const head = git(f.path, "rev-parse", "HEAD");
+    const h = harness({ ...f.args, goal: "Clean every file and commit each batch" }, defaultHandler({
+        Work: async ({ context }) => {
+            if (!context.batch.length) return undefined;
+            assert.deepEqual(context.preExisting[f.path], ["other/skip.txt"]);
+            await writeFile(join(f.path, "src", "a.txt"), "cleaned\n");
+            git(f.path, "commit", "-qm", "refactor: clean batch", "--", "src/a.txt");
+            return work(context.batch, [], ["src/a.txt: cleaned"]);
+        },
+    }));
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.equal(result.commits, undefined);
+    assert.equal(h.calls.filter((call) => call.role === "Verify").length, 1);
+    assert.deepEqual(exhaustiveTask.meta.phases.map((phase) => phase.title), ["Work", "Verify"]);
+    assert.equal(git(f.path, "rev-list", "--count", `${head}..HEAD`), "1");
+    assert.equal(git(f.path, "status", "--porcelain"), "M other/skip.txt");
+});
+
+test("changed rounds stay uncommitted unless a worker commits them", async (t) => {
+    const f = await filesFixture(t, 1, { batchSize: 1, quietRounds: 1 });
+    const h = harness(f.args, defaultHandler({
         Work: async ({ context }) => {
             if (!context.batch.length) return undefined;
             await writeFile(join(f.path, "src", "a.txt"), "cleaned\n");
             return work(context.batch, [], ["src/a.txt: cleaned"]);
         },
-        Commit: ({ context }) => {
-            assert.deepEqual(context.changedRepos, [f.path]);
-            assert.deepEqual(context.preExisting[f.path], ["other/skip.txt"]);
-            git(f.path, "add", "src/a.txt", "docs/ledger.md");
-            git(f.path, "commit", "-qm", "refactor: clean batch");
-            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
-        },
     }));
-    const result = await h.run();
-    assert.equal(result.status, "complete");
-    assert.equal(result.commits.length, 1);
-    assert.equal(git(f.path, "status", "--porcelain"), "M other/skip.txt");
-    assert.match(git(f.path, "show", "HEAD:docs/ledger.md"), /src\/a.txt: cleaned/);
-});
-
-test("commit reports must account for every changed repository and keep contents unchanged", async (t) => {
-    const f = await filesFixture(t, 1, { batchSize: 1 });
-    const changing = defaultHandler({
-        Work: async ({ context }) => {
-            await writeFile(join(f.path, "src", "a.txt"), "changed\n");
-            return work(context.batch, [], ["src/a.txt: changed"]);
-        },
-        Commit: () => report({ commits: [], uncommitted: [] }),
-    });
-    const result = await harness(f.args, changing).run();
-    assert.equal(result.status, "blocked");
-    assert.equal(result.phase, "Commit");
+    assert.equal((await h.run()).status, "complete");
+    assert.equal(git(f.path, "status", "--porcelain"), "M src/a.txt");
 });
 
 test("repos mode discovers repositories and processes one per round by default", async (t) => {
@@ -395,7 +387,7 @@ test("round ceilings pause for approval and block on edits made while paused", a
     assert.match(blocked.reason, /paused/);
 });
 
-test("a resumed round still verifies and commits its own edits", async (t) => {
+test("a resumed round still verifies its own edits", async (t) => {
     const f = await filesFixture(t, 1, { batchSize: 1, quietRounds: 1 });
     let crash = true;
     const h = harness(f.args, defaultHandler({
@@ -404,33 +396,32 @@ test("a resumed round still verifies and commits its own edits", async (t) => {
             await writeFile(join(f.path, "src", "a.txt"), "cleaned\n");
             return work(context.batch, [], ["src/a.txt: cleaned"]);
         },
-        Commit: () => {
+        Verify: () => {
             if (crash) {
                 crash = false;
                 throw new Error("interrupted");
             }
-            git(f.path, "commit", "-qam", "refactor: clean batch");
-            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
+            return undefined;
         },
     }));
     await assert.rejects(h.run, /interrupted/);
     const result = await h.run();
     assert.equal(result.status, "complete");
-    assert.equal(result.commits.length, 1);
-    assert.equal(h.calls.filter((call) => call.role === "Verify").length, 1);
-    assert.equal(git(f.path, "status", "--porcelain"), "");
+    assert.equal(h.calls.filter((call) => call.role === "Work" && call.context.batch.length).length, 1);
+    assert.equal(h.calls.filter((call) => call.role === "Verify").length, 2);
+    assert.match(await readFile(f.args.ledgerPath, "utf8"), /1\/1 units processed/);
 });
 
-test("a blocked commit leaves the batch unprocessed for the next run", async (t) => {
+test("a blocked verification leaves the batch unprocessed for the next run", async (t) => {
     const f = await filesFixture(t, 2, { batchSize: 1, quietRounds: 1 });
     const blocked = await harness(f.args, defaultHandler({
         Work: async ({ context }) => {
             await writeFile(join(f.path, "src", "a.txt"), "changed\n");
             return work(context.batch, [], ["src/a.txt: changed"]);
         },
-        Commit: () => report({ status: "blocked", commits: [], uncommitted: [], questions: ["May I commit?"] }),
+        Verify: () => report({ status: "blocked", complete: false, remaining: "", rejected: [], questions: ["May I run the tests?"] }),
     })).run();
-    assert.equal(blocked.phase, "Commit");
+    assert.equal(blocked.phase, "Verify");
     assert.match(await readFile(f.args.ledgerPath, "utf8"), /0\/2 units processed/);
     git(f.path, "checkout", "--", "src/a.txt");
     const next = harness(f.args, defaultHandler());
@@ -468,10 +459,6 @@ test("resuming after rounds deleted every scoped file replays preparation", asyn
             git(f.path, "rm", "-q", "src/a.txt", "src/b.txt");
             return work(context.batch, [], ["removed src"]);
         },
-        Commit: () => {
-            git(f.path, "commit", "-qm", "refactor: remove src");
-            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
-        },
     }));
     await assert.rejects(h.run, /PAUSED:round-limit-v2:1/);
     const result = await h.run();
@@ -488,11 +475,6 @@ test("resuming after a final rejection rewrote an in-repo ledger is allowed", as
         ledgerPath: join(path, "ledger.md"), quietRounds: 1, maxRounds: 2,
     }, defaultHandler({
         Work: ({ round }) => round === 1 ? work([], [finding("x", "app.ts:1"), finding("y", "app.ts:1")], [], "grep") : undefined,
-        Commit: () => {
-            git(path, "add", "-A");
-            git(path, "commit", "-qm", "docs: update ledger");
-            return report({ commits: [{ repo: path, commit: git(path, "rev-parse", "HEAD") }], uncommitted: [] });
-        },
         Final: () => finals++ ? undefined : report({ complete: false, remaining: "Look again", rejected: ["y"] }),
     }));
     await assert.rejects(h.run, /PAUSED:round-limit-v2:2/);
@@ -524,7 +506,7 @@ test("files behind symlinked or junctioned directories are not units", async (t)
     assert.deepEqual(h.calls[0].context.batch, ["src/a.txt"]);
 });
 
-test("edits kept from a blocked round are verified and committed by the next run", async (t) => {
+test("edits kept from a blocked round are verified by the next run", async (t) => {
     const f = await filesFixture(t, 1, { batchSize: 1, quietRounds: 1 });
     const edit = async ({ context }) => {
         if (!context.batch.length) return undefined;
@@ -533,22 +515,20 @@ test("edits kept from a blocked round are verified and committed by the next run
     };
     const first = await harness(f.args, defaultHandler({
         Work: edit,
-        Commit: () => report({ status: "blocked", commits: [], uncommitted: [], questions: ["Which branch?"] }),
+        Verify: () => report({ status: "blocked", complete: false, remaining: "", rejected: [], questions: ["Which test command?"] }),
     })).run();
-    assert.equal(first.phase, "Commit");
+    assert.equal(first.phase, "Verify");
     const next = harness(f.args, defaultHandler({
         Work: ({ context }) => context.batch.length ? work(context.batch) : undefined,
-        Commit: ({ context }) => {
+        Verify: ({ context }) => {
             assert.deepEqual(context.preExisting[f.path], []);
-            git(f.path, "commit", "-qam", "refactor: clean batch");
-            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
+            return undefined;
         },
     }));
     const result = await next.run();
     assert.equal(result.status, "complete");
-    assert.equal(result.commits.length, 1);
     assert.equal(next.calls.filter((call) => call.role === "Verify").length, 1);
-    assert.equal(git(f.path, "status", "--porcelain"), "");
+    assert.equal(git(f.path, "status", "--porcelain"), "M src/a.txt");
     assert.doesNotMatch(await readFile(f.args.ledgerPath, "utf8"), /"pending"/);
 });
 
@@ -559,10 +539,6 @@ test("a continued ledger may have no scoped files left", async (t) => {
             if (!context.batch.length) return report({ status: "blocked", processed: [], findings: [], changes: [], strategy: "", questions: ["Scope?"] });
             git(f.path, "rm", "-q", "src/a.txt");
             return work(context.batch, [], ["removed src/a.txt"]);
-        },
-        Commit: () => {
-            git(f.path, "commit", "-qm", "refactor: remove src");
-            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
         },
     })).run();
     assert.equal(first.status, "blocked");
@@ -597,10 +573,6 @@ test("review attempts repairing a round verification complaint can correct findi
             return work([], [{ id: "sdk", title: "Corrected", locations: ["app.ts:1"], details: "Corrected details" }], ["app.ts: fixed"], "edit");
         },
         Verify: ({ attempt }) => attempt === 1 ? report({ complete: false, remaining: "sdk is mislabeled", rejected: [] }) : undefined,
-        Commit: () => {
-            git(path, "commit", "-qam", "fix: app");
-            return report({ commits: [{ repo: path, commit: git(path, "rev-parse", "HEAD") }], uncommitted: [] });
-        },
     }));
     const result = await h.run();
     assert.equal(result.status, "complete");
@@ -620,10 +592,6 @@ test("repair attempts keep findings and changes from earlier attempts", async (t
             if (attempt === 1) return report({ complete: false, remaining: "Fix the test", rejected: [] });
             assert.deepEqual(context.work.changes, ["src/a.txt: cleaned", "src/a.txt: test fixed"]);
             return verified();
-        },
-        Commit: () => {
-            git(f.path, "commit", "-qam", "refactor: clean batch");
-            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
         },
     }));
     const result = await h.run();
