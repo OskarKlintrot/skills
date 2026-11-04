@@ -307,49 +307,78 @@ test("Define feedback recovers when its earlier reported spec was never created"
     });
 });
 
-test("Define detects dirty submodule overwrites with batched index reads", async (t) => {
-    await inRepository(async (directory, git) => {
-        const source = join(directory, "module-source");
-        await mkdir(source);
-        const nestedGit = (...args) => execFileSync("git", args, { cwd: source, stdio: "pipe" });
-        nestedGit("init");
-        await writeFile(join(source, "source.txt"), "Initial module content");
-        for (let index = 0; index < 20; index++) {
-            await writeFile(join(source, `extra-${index}.txt`), "Unchanged module content");
-        }
-        nestedGit("add", ".");
-        nestedGit("-c", "user.name=Test", "-c", "user.email=test@example.com",
-            "commit", "-m", "docs: Add module");
-        git("-c", "protocol.file.allow=always", "submodule", "add", source, "module");
-        git("-c", "user.name=Test", "-c", "user.email=test@example.com",
-            "commit", "-m", "build: Add submodule");
-        git("config", "submodule.module.ignore", "all");
-        await rm(source, { recursive: true, force: true });
-        await writeFile(join("module", "source.txt"), "User's unfinished module changes");
+test("a blocked initial Define cannot hide unauthorized edits behind later feedback", async () => {
+    await inRepository(async () => {
         const h = generatedSpecHarness();
         const agent = h.ctx.agent;
         h.ctx.agent = async (prompt, options) => {
             const result = await agent(prompt, options);
-            if (options.label === "Define") await writeFile(join("module", "source.txt"), "Overwritten");
+            if (options.label === "Define") {
+                await writeFile("seed.txt", "Out-of-scope edit");
+                return { ...result, status: "blocked", questions: ["Which scope?"] };
+            }
             return result;
         };
-        const execute = childProcess.execFileSync;
-        let indexReads = 0;
-        const spy = t.mock.method(childProcess, "execFileSync", (command, args, options) => {
-            if (command === "git" && args.includes("--stage")) indexReads++;
-            return execute(command, args, options);
-        });
-        syncBuiltinESMExports();
-        try {
-            const result = await lifecycle.run(h.ctx);
-            assert.equal(result.verdict, "NO-GO");
-            assert.match(result.reason, /pre-existing work/);
-            assert.ok(indexReads <= 6, `Expected batched index reads, observed ${indexReads}`);
-        } finally {
-            spy.mock.restore();
-            syncBuiltinESMExports();
-        }
+        const initial = await lifecycle.run(h.ctx);
+        assert.match(initial.reason, /outside its assigned spec/);
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        await mkdir("tasks");
+        await writeFile(context.revisionRequestPath, JSON.stringify({ define: "Only the core scope" }));
+        const resumed = await lifecycle.run(h.ctx);
+        assert.equal(resumed.verdict, "NO-GO");
+        assert.match(resumed.reason, /outside its assigned spec/);
+        assert.equal(h.calls.filter((call) => call.label === "Define").length, 1);
+        assert.equal(h.calls.some((call) => call.label === "Commit:spec"), false);
     });
+});
+
+test("Define detects ignored clean and dirty submodule overwrites with batched index reads", async (t) => {
+    for (const initiallyDirty of [true, false]) {
+        await inRepository(async (directory, git) => {
+            const source = join(directory, "module-source");
+            await mkdir(source);
+            const nestedGit = (...args) => execFileSync("git", args, { cwd: source, stdio: "pipe" });
+            nestedGit("init");
+            await writeFile(join(source, "source.txt"), "Initial module content");
+            for (let index = 0; index < 20; index++) {
+                await writeFile(join(source, `extra-${index}.txt`), "Unchanged module content");
+            }
+            nestedGit("add", ".");
+            nestedGit("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "-m", "docs: Add module");
+            git("-c", "protocol.file.allow=always", "submodule", "add", source, "module");
+            git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "-m", "build: Add submodule");
+            git("config", "submodule.module.ignore", "all");
+            await rm(source, { recursive: true, force: true });
+            if (initiallyDirty) {
+                await writeFile(join("module", "source.txt"), "User's unfinished module changes");
+            }
+            const h = generatedSpecHarness();
+            const agent = h.ctx.agent;
+            h.ctx.agent = async (prompt, options) => {
+                const result = await agent(prompt, options);
+                if (options.label === "Define") await writeFile(join("module", "source.txt"), "Overwritten");
+                return result;
+            };
+            const execute = childProcess.execFileSync;
+            let indexReads = 0;
+            const spy = t.mock.method(childProcess, "execFileSync", (command, args, options) => {
+                if (command === "git" && args.includes("--stage")) indexReads++;
+                return execute(command, args, options);
+            });
+            syncBuiltinESMExports();
+            try {
+                const result = await lifecycle.run(h.ctx);
+                assert.equal(result.verdict, "NO-GO");
+                assert.match(result.reason, initiallyDirty ? /pre-existing work/ : /outside its assigned spec/);
+                assert.ok(indexReads <= 6, `Expected batched index reads, observed ${indexReads}`);
+            } finally {
+                spy.mock.restore();
+                syncBuiltinESMExports();
+            }
+        });
+    }
 });
 
 test("workers protect only dirty paths and omit the runtime tracked-file inventory", async () => {

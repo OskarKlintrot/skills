@@ -419,6 +419,28 @@ export const lifecycle = {
             "preserve unrelated files and report unresolved decisions.";
         const initialSpec = await ctx.step("initial-spec-selection-v1", () => agent("Define",
             defineInstruction, { goal: ctx.args.goal }, schema({ specPath: text })));
+        const initialSafety = await ctx.step("initial-define-safety-v1", async () => {
+            if (currentHead(baseline.root) !== baseline.head) return "Define changed HEAD before specification approval.";
+            if ((await changedProtectedPaths(baseline)).length) return "Define changed pre-existing work.";
+            const source = evidenced(initialSpec) && nonempty(initialSpec.specPath) ?
+                await loadSpec(initialSpec.specPath) : null;
+            const allowed = new Set([...baseline.stagedPaths, ...baseline.unstagedPaths,
+                ...baseline.untrackedPaths, relative(baseline.root, resolve(baseline.root, revisionPath))]
+                .map((path) => path.replaceAll("\\", "/")));
+            if (source && !source.error) allowed.add(source.path.replaceAll("\\", "/"));
+            const changed = [
+                ...gitPaths(["diff", "--cached", "--ignore-submodules=none", "--name-only", "-z"]),
+                ...gitPaths(["diff", "--ignore-submodules=none", "--name-only", "-z"]),
+                ...gitPaths(["ls-files", "--others", "--exclude-standard", "-z"]),
+            ];
+            return changed.some((path) => !allowed.has(path.replaceAll("\\", "/"))) ?
+                "Define changed files outside its assigned spec." : null;
+        });
+        if (initialSafety) {
+            reports.Define = { ...initialSpec,
+                questions: [`${initialSafety} Restore affected paths outside the spec before continuing.`] };
+            return stop("Define", initialSafety);
+        }
         const missingInitialSpec = await ctx.step(`initial-spec-validity-v1:${specRevision}`, async () =>
             !evidenced(initialSpec) || !nonempty(initialSpec.specPath) ||
             Boolean((await loadSpec(initialSpec.specPath)).error));
@@ -477,8 +499,8 @@ export const lifecycle = {
         }
         const definePaths = await ctx.step(`define-path-observation-v3:${specRevision}`, async () => {
             const changedTrackedPaths = [...new Set([
-                ...gitPaths(["diff", "--cached", "--name-only", "-z"]),
-                ...gitPaths(["diff", "--name-only", "-z"]),
+                ...gitPaths(["diff", "--cached", "--ignore-submodules=none", "--name-only", "-z"]),
+                ...gitPaths(["diff", "--ignore-submodules=none", "--name-only", "-z"]),
             ])]
                 .map((path) => path.replaceAll("\\", "/"));
             if (changedTrackedPaths.includes(specPathKey) &&
