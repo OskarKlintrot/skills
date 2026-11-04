@@ -1,51 +1,57 @@
 ---
 name: exhaustive-task
-description: Run the exhaustive-task dynamic workflow for repository-wide discovery/documentation or repetitive cleanup that must cover every scoped item. Use when asked to run exhaustive-task or keep iterating until no work remains.
+description: Run the exhaustive-task dynamic workflow for large tasks agents tend to stop early on, such as finding every integration, listing every design/implementation difference, or applying the same change across many files or repositories. Use when asked to run exhaustive-task or keep going in batches until nothing new is found.
 ---
 
 # Exhaustive task
 
-Coordinate in the **main conversation**. Workers execute autonomously within the
-agreed scope; this skill owns user decisions, round-checkpoint approval and recovery.
+Coordinate in the **main conversation**. This skill owns preparation, user decisions,
+round-checkpoint approval and recovery. Workers run autonomously after launch.
 Run the workflow, not a hand-written approximation of its loop.
+
+The workflow processes small batches and records results in a ledger it owns:
+unit rounds (a batch of files or repositories each), then review rounds with
+changing search strategies until `quietRounds` consecutive review rounds find
+nothing new. Every round is Work -> independent read-only Verify -> Commit when
+files changed.
 
 ## Prepare
 
-1. Read repository instructions and relevant context. Establish the exact goal,
-   input/output scope and checkable acceptance criteria. A task may span files.
-   Ask unresolved questions one at a time with `ask_user`; do not launch with
-   ambiguous requirements. No spec document is required just to use this workflow.
-2. Load the installed `agent-skills:git-workflow-and-versioning` skill and follow
+1. Read repository instructions and relevant context. Establish the exact goal
+   and checkable acceptance criteria: what counts as a finding or a finished change,
+   and which details each ledger entry needs. Ask unresolved questions one at a
+   time with `ask_user`; do not launch with ambiguous requirements.
+2. Choose the mode and propose it to the user:
+   - `files`: work lives in files of the current repository. `paths` are
+     repository-relative (`["."]` for everything). Requires the worktree root as
+     working directory.
+   - `repos`: the same task per Git repository under absolute `paths`, for
+     example "update packages in every repository under C:\repos".
+   - `search`: no enumerable units, for example design versus implementation.
+     Sources workers cannot reach, such as a canvas, must first be exported to a
+     file and named in the goal.
+3. Propose an absolute `ledgerPath` and ask the user to confirm or change it:
+   in the repository when the ledger is a deliverable (it is committed with each
+   round), otherwise in the session's `files/` folder. An existing ledger for the
+   same goal and mode continues where it stopped; use a new path for a fresh start.
+4. Ask with `ask_user` about the batch size: propose 5 for `files` and `search`
+   and 1 for `repos`, or the user's own number.
+5. Ask with `ask_user` whether to use a round ceiling, unless the user already
+   answered for this invocation: no ceiling or a user-chosen positive integer.
+   Omit `maxRounds` for no ceiling. Never invent a default. Explain that without a
+   ceiling execution continues until completion, a blocker or a runtime limit.
+   Set credit/time/agent limits only when the user specifies them.
+6. Load the installed `agent-skills:git-workflow-and-versioning` skill and follow
    repository Git conventions. If unavailable, stop and report the dependency.
-   Confirm the session uses a non-default feature branch/worktree. Stay on that
-   branch; do not switch to the default branch or modify another checkout.
-3. Before launch, ask the user with `ask_user` whether to use a round ceiling,
-   unless they have explicitly answered for this invocation. Offer no ceiling or
-   a user-chosen positive integer; if they choose a number without supplying it,
-   ask for the number next. Omit `maxRounds` for no ceiling. Never invent a default.
-   A round processes the whole current queue and audits the scope; it is not one
-   file, task, agent or credit. The ceiling pauses after each batch, not forever.
-   Explain that without a ceiling execution continues until completion, a blocker
-   or a runtime limit. Set credit/time/agent limits only when the user specifies them.
-4. Inspect `git status --porcelain`, `git diff` and `git diff --cached` and relevant
-   untracked content. Save a real pre-edit baseline in a session artifact outside
-   the repository; pass its path as `baselinePath`. Record ownership so workers can
-   separate new work from pre-existing user edits and staged entries. Ask if
-   ownership is unclear. Preserve the baseline across recovery runs; do not
-   reclassify user edits as workflow work. Keep secrets out of reports and commits.
-5. Present the goal, scope, acceptance and chosen ceiling for explicit launch
-   approval using `ask_user`. Explain that each independently verified changed
-   item receives an atomic commit on the current branch; no pushes, merges or
-   deployments are authorized. Approval covers autonomous execution and local
-   commits within that scope, including newly discovered items, not new risks.
-   If preparation/approval cannot be completed interactively, stop.
-
-The file manifest is the current list of tracked and non-ignored untracked files
-inside `scope`, generated by Git. `["."]` covers the repository; narrower paths
-cover only those files/directories. Include requested output destinations as well
-as sources, even when the outputs do not exist yet. Ignored untracked files,
-symlinks, submodules, other repositories and remote systems are unsupported.
-Required work outside this boundary is a blocker, not permission to claim coverage.
+   Confirm each affected repository is on a non-default feature branch or worktree
+   the user accepts for commits. Do not switch branches yourself.
+7. Show `git status --porcelain` for affected repositories. The workflow records
+   dirty files at start as user work that workers must not revert or commit; ask
+   whether that is acceptable or whether the user wants to commit them first.
+8. Present goal, acceptance, mode, paths, ledger, batch size and ceiling for
+   explicit launch approval using `ask_user`. Explain that each round with changed
+   files gets local commits on the current branch; no pushes, merges or
+   deployments are authorized. If approval cannot be obtained interactively, stop.
 
 ## Launch and coordinate
 
@@ -54,51 +60,40 @@ After approval, run the `exhaustive-task` dynamic workflow with:
 ```json
 {
   "goal": "<agreed task>",
-  "scope": ["<repository-relative source/output paths>"],
-  "acceptance": "<concrete completion criteria and required checks>",
-  "baselinePath": "<absolute path to the saved session baseline>",
-  "maxRounds": 3
+  "acceptance": "<concrete criteria and required checks>",
+  "mode": "files",
+  "paths": ["."],
+  "ledgerPath": "<absolute path>",
+  "batchSize": 5,
+  "maxRounds": 10
 }
 ```
 
-`3` is illustrative, not a default. Use the user's number or omit `maxRounds`.
-If dynamic workflows are unavailable, report the limitation; do not silently
-substitute a single agent. Leave model, reasoning effort and context selection to
-runtime preferences unless explicitly requested.
+The numbers are illustrative. Use the user's answers; omit `maxRounds` for no
+ceiling. If dynamic workflows are unavailable, report the limitation; do not
+silently substitute a single agent. Leave model selection to runtime preferences.
 
-The loop is Inventory -> foreach (Work -> independent Verify -> Commit for
-verified items) -> full-scope Audit -> repeat. Failed item verification is re-queued
-with repair instructions; audit findings may add or reopen items. Workers cannot
-interview the user. Commit failures, missing evidence, ambiguity and no progress
-stop as blocked instead of being treated as done.
+Inspect the runtime envelope and result before acting:
 
-Inspect the runtime envelope and workflow reports before acting:
-
-- **Paused at `round-limit-v1:<round>`:** read the logged completed/pending queue,
-  audit and actual changes. Present progress and remaining work, then use
-  `ask_user` to approve the next batch or stop. Only explicit approval authorizes
-  resuming that exact run for another `maxRounds` rounds. Never auto-resume.
-  Stopping leaves the run paused. Scope edits or revised requirements require a
-  new run; a checkpoint is not permission to reuse stale evidence.
-- **Completed with result `status: "blocked"`:** it is not complete and cannot be
-  resumed as a checkpoint. Inspect `reason`, `pending`, `report` and `needsInput`.
-  Ask each needed decision one at a time here; missing tools/tests are blockers,
-  not automatically questions for the user. Resolve the cause, renew approval
-  when scope/risk changes, and start a fresh run against current files with the
-  original ownership baseline. Discovery must reconcile existing commits/output.
-- **Runtime error/limit/interruption:** inspect run state and partial edits before
-  resuming. Obtain approval before raising a reached resource limit; raise only
-  that limit. Never blindly retry cancelled runs or discard partial work.
-- **Complete:** review the final audit, passing evidence, empty queue and commit
-  reports. Summarize changed files, intentionally untouched scope and concerns.
-  Distinguish model-reported coverage from proven semantic completeness.
+- **Paused at `round-limit-v2:<round>`:** read the ledger and logged progress.
+  Present findings so far and remaining units, then use `ask_user` to approve the
+  next batch of rounds or stop. Only explicit approval authorizes resuming that
+  exact run. Never auto-resume. Edits while paused block the resumed round.
+- **Completed with `status: "blocked"`:** not complete. Inspect `reason`,
+  `remainingUnits`, `report` and `needsInput`. Ask needed decisions one at a time.
+  After resolving the cause, renew approval if scope or risk changed and start a
+  new run with the same `ledgerPath`; it continues after the processed units.
+- **Runtime error, limit or interruption:** inspect run state and partial edits
+  before resuming. Obtain approval before raising a reached resource limit; raise
+  only that limit. Never blindly retry or discard partial work.
+- **Complete:** summarize findings, changes, commits and the ledger location.
+  Say that completion means agents stopped finding new results after varied
+  searches, not proven completeness.
 
 ## Recovery boundaries
 
 Rollback is not permission to overwrite user work. Workers may undo only their own
-uncommitted edits to named scoped files after checking the original baseline and
-the chosen save point. Prefer a reverse patch when full-file restoration would
-discard other edits. Never blindly restore a file from the default branch: it can
-erase valid feature-branch work as well as the failed attempt. Branch-wide resets,
-hard resets, history rewrites and undoing committed/user work require explicit
-user direction and current permissions. Keep other worktrees and the index intact.
+uncommitted edits, preferring a reverse patch over whole-file restoration. Never
+blindly restore a file from the default branch: it can erase valid feature-branch
+work as well as the failed attempt. Branch-wide resets, hard resets, history
+rewrites and undoing committed or user work require explicit user direction.

@@ -1,49 +1,54 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { exhaustiveTask } from "../com.github.copilot/extensions/exhaustive-task/workflow.mjs";
 
-const item = (id) => ({ id, title: id, instruction: `Document ${id}`, acceptance: `${id} documented` });
-const a = item("integration-a");
-const b = item("integration-b");
-const check = { command: "inspect documentation against source", outcome: "passed", evidence: "Matches source" };
+const check = { command: "inspect source", outcome: "passed", evidence: "Matches source" };
 const report = (extra = {}) => ({
-    status: "ready", summary: "Inspected actual files", evidence: ["output.txt:1"],
-    checks: [check], questions: [], ...extra,
+    status: "ready", summary: "Inspected actual files", evidence: ["file.txt:1"], checks: [check], questions: [], ...extra,
 });
-const inventory = (items = [], extra = {}) => report({ items, ...extra });
-const verification = (extra = {}) => report({ complete: true, remaining: "", ...extra });
-const receipt = (extra = {}) => report({ outcome: "committed", commit: "a".repeat(40), ...extra });
+const work = (processed, findings = [], changes = [], strategy = "") => report({ processed, findings, changes, strategy });
+const verified = (extra = {}) => report({ complete: true, remaining: "", rejected: [], ...extra });
+const finding = (id, location) => ({ id, title: `Title ${id}`, locations: [location], details: `Details ${id}` });
+const git = (cwd, ...args) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com",
+    "-c", "core.autocrlf=false", ...args], { cwd, encoding: "utf8" }).trim();
+const origin = process.cwd();
 
-async function fixture(t) {
-    const root = await mkdtemp(resolve("tests", "exhaustive-"));
-    t.after(() => rm(root, { recursive: true, force: true }));
-    const directory = join(root, "scope");
-    await mkdir(directory);
-    const baselinePath = join(root, "baseline.txt");
-    await writeFile(baselinePath, "Simulated pre-edit baseline: output.txt is untracked with initial content.\n");
-    const path = join(directory, "output.txt");
-    await writeFile(path, "initial\n");
-    return {
-        directory, path,
-        args: {
-            goal: "Document every integration", scope: [relative(process.cwd(), directory)],
-            acceptance: "All scoped integrations have accurate documentation",
-            baselinePath,
-        },
-    };
+async function temp(t) {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "exhaustive-test-")));
+    t.after(async () => {
+        process.chdir(origin);
+        await rm(directory, { recursive: true, force: true });
+    });
+    return directory;
 }
 
-function harness(f, responses, commitResponse = receipt()) {
+async function repo(path, files) {
+    await mkdir(path, { recursive: true });
+    git(path, "init", "-q");
+    for (const [file, content] of Object.entries(files)) {
+        await mkdir(dirname(join(path, file)), { recursive: true });
+        await writeFile(join(path, file), content);
+    }
+    git(path, "add", "-A");
+    git(path, "commit", "-qm", "init");
+    return realpath(path);
+}
+
+function inside(directory) {
+    process.chdir(directory);
+}
+
+function harness(args, handler) {
     const journal = new Map();
+    const checkpoints = new Set();
     const calls = [];
     const logs = [];
-    const checkpoints = new Set();
-    const commitCalls = [];
-    const events = [];
     const ctx = {
-        args: f.args, runId: "test-run",
+        args, runId: "test-run",
         log: (message) => logs.push(message),
         phase() {},
         async pause(key) {
@@ -59,447 +64,238 @@ function harness(f, responses, commitResponse = receipt()) {
         async agent(prompt, options) {
             const key = JSON.stringify({ prompt, options });
             if (journal.has(key)) return journal.get(key);
-            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
-            const call = { prompt, ...options, context };
-            events.push(call);
-            if (options.label.startsWith("Commit:")) {
-                commitCalls.push(call);
-                const output = typeof commitResponse === "function" ? await commitResponse(context) : commitResponse;
-                journal.set(key, output);
-                return output;
-            }
-            const response = responses[calls.length];
-            assert.ok(response, `Unexpected agent: ${options.label}`);
-            assert.ok(options.label.startsWith(response[0]), `${options.label} should start with ${response[0]}`);
+            const [role, round, attempt] = options.label.split(":");
+            const call = { role, round: Number(round), attempt: Number(attempt), context: JSON.parse(prompt.split("Context (JSON):\n")[1]) };
             calls.push(call);
-            const answer = typeof response[1] === "function" ? await response[1](context) : response[1];
-            const output = answer && Object.hasOwn(answer, "items") && !Object.hasOwn(answer, "coverage")
-                ? { ...answer, coverage: context.manifest } : answer;
+            const output = await handler(call);
+            assert.ok(output, `Unexpected agent: ${options.label}`);
             journal.set(key, output);
             return output;
         },
     };
-    return { ctx, calls, logs, commitCalls, events };
+    return { ctx, calls, logs, run: () => exhaustiveTask.run(ctx) };
 }
 
-const work = (f, content) => async () => {
-    await writeFile(f.path, content);
-    return report();
+const defaultHandler = (overrides = {}) => async (call) => {
+    if (overrides[call.role]) {
+        const output = await overrides[call.role](call);
+        if (output) return output;
+    }
+    if (call.role === "Work") return work(call.context.batch, [], [], call.context.batch.length ? "" : `strategy ${call.round}`);
+    if (call.role === "Verify") return verified();
+    return undefined;
 };
+
+async function filesFixture(t, count = 7, extra = {}) {
+    const root = await temp(t);
+    const files = Object.fromEntries(Array.from({ length: count }, (_, index) => [`src/${String.fromCharCode(97 + index)}.txt`, `file ${index}\n`]));
+    const path = await repo(join(root, "repo"), { ...files, "other/skip.txt": "skip\n", ".gitignore": "ignored/\n" });
+    await mkdir(join(path, "ignored"));
+    await writeFile(join(path, "ignored", "x.txt"), "ignored\n");
+    inside(path);
+    return {
+        root, path,
+        args: { goal: "Find every ADO integration", acceptance: "Every integration is listed", mode: "files",
+            paths: ["src"], ledgerPath: join(root, "ledger.md"), batchSize: 3, ...extra },
+    };
+}
 
 test("registered workflow declares its contract without model or resource overrides", () => {
     assert.equal(exhaustiveTask.meta.name, "exhaustive-task");
-    assert.deepEqual(exhaustiveTask.meta.argsSchema.required, ["goal", "scope", "acceptance", "baselinePath"]);
+    assert.deepEqual(exhaustiveTask.meta.argsSchema.required, ["goal", "acceptance", "mode", "ledgerPath"]);
     assert.equal(exhaustiveTask.meta.limits, undefined);
 });
 
-test("invalid optional round ceilings fail before agents are spawned", async (t) => {
-    const f = await fixture(t);
-    for (const maxRounds of [0, -1, 1.5, "2", null, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
-        const h = harness({ args: { ...f.args, maxRounds } }, []);
-        await assert.rejects(() => exhaustiveTask.run(h.ctx), /maxRounds/);
-        assert.equal(h.calls.length, 0);
+test("invalid arguments fail before agents are spawned", async (t) => {
+    const f = await filesFixture(t);
+    const invalid = [
+        { mode: "everything" }, { batchSize: 0 }, { quietRounds: -1 }, { maxRounds: 1.5 },
+        { ledgerPath: "ledger.md" }, { paths: [] }, { paths: ["../outside"] }, { paths: [".git"] },
+        { paths: ["nothing-here"] }, { mode: "repos", paths: ["relative"] },
+    ];
+    for (const override of invalid) {
+        const h = harness({ ...f.args, ...override }, defaultHandler());
+        await assert.rejects(h.run);
+        assert.equal(h.calls.length, 0, JSON.stringify(override));
     }
 });
 
-test("baseline is required, readable, nonempty and immutable across runtime resume", async (t) => {
-    const f = await fixture(t);
-    for (const baselinePath of [undefined, "", join(f.directory, "missing-baseline.txt"), f.directory]) {
-        const h = harness({ args: { ...f.args, baselinePath } }, []);
-        await assert.rejects(() => exhaustiveTask.run(h.ctx), /baselinePath|ENOENT|EISDIR/);
-        assert.equal(h.calls.length, 0);
-    }
-    await writeFile(f.args.baselinePath, " ");
-    const empty = harness(f, []);
-    await assert.rejects(() => exhaustiveTask.run(empty.ctx), /baselinePath/);
-    await writeFile(f.args.baselinePath, "Original baseline\n");
-    const h = harness(f, [["Inventory:0", inventory()], ["Audit:1:", inventory()]]);
-    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
-    await writeFile(f.args.baselinePath, "Reclassified ownership\n");
-    const changed = await exhaustiveTask.run(h.ctx);
-    assert.equal(changed.status, "blocked");
-    assert.match(changed.reason, /Baseline changed/);
-    assert.equal(h.calls.length, 2);
-});
-
-test("scope escape validation runs with otherwise valid arguments", async (t) => {
-    const f = await fixture(t);
-    for (const scope of [[".."], [resolve(".")], [".git"], [".git\\config"]]) {
-        const h = harness({ args: { ...f.args, scope } }, []);
-        await assert.rejects(() => exhaustiveTask.run(h.ctx), /scope paths/);
-        assert.equal(h.events.length, 0);
-    }
-});
-
-test("round ceiling pauses before more work and resume allows one more bounded batch", async (t) => {
-    const f = await fixture(t);
-    f.args.maxRounds = 1;
-    const c = item("integration-c");
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", work(f, "a\n")],
-        ["Verify:1:", verification()], ["Audit:1:", inventory([b])],
-        ["Work:2:", work(f, "a b\n")], ["Verify:2:", verification()],
-        ["Audit:2:", inventory([c])], ["Work:3:", work(f, "a b c\n")],
-        ["Verify:3:", verification()], ["Audit:3:", inventory()],
-    ]);
-    await assert.rejects(() => exhaustiveTask.run(h.ctx), /PAUSED:round-limit-v1:1/);
-    assert.equal(h.calls.length, 4);
-    assert.ok(h.logs.some((log) => log.includes("APPROVAL REQUIRED") && log.includes(b.id)));
-    await assert.rejects(() => exhaustiveTask.run(h.ctx), /PAUSED:round-limit-v1:2/);
-    assert.equal(h.calls.length, 7);
-    const result = await exhaustiveTask.run(h.ctx);
+test("files mode covers every scoped file in batches, then reviews until quiet", async (t) => {
+    const f = await filesFixture(t);
+    const h = harness(f.args, defaultHandler({
+        Work: ({ context, round }) => {
+            if (context.batch.length) {
+                const hits = context.batch.filter((file) => ["src/b.txt", "src/e.txt"].includes(file));
+                return work(context.batch, hits.map((file) => finding("ado-rest-client", file)));
+            }
+            if (round === 4) return work([], [finding("ado-pipeline", "azure-pipelines.yml:1")], [], "searched pipelines");
+            return undefined;
+        },
+    }));
+    const result = await h.run();
     assert.equal(result.status, "complete");
-    assert.equal(result.round, 3);
-    assert.equal(h.calls.length, 10);
-});
-
-test("completion at the round ceiling does not pause or count partial work as complete", async (t) => {
-    const f = await fixture(t);
-    f.args.maxRounds = 1;
-    const h = harness(f, [["Inventory:0", inventory()], ["Audit:1:", inventory()]]);
-    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
-    assert.equal(h.logs.some((log) => log.includes("APPROVAL REQUIRED")), false);
-});
-
-test("external edits at a round checkpoint require a fresh run", async (t) => {
-    const f = await fixture(t);
-    f.args.maxRounds = 1;
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", work(f, "a\n")],
-        ["Verify:1:", verification()], ["Audit:1:", inventory([b])],
+    const batches = h.calls.filter((call) => call.role === "Work" && call.context.batch.length).map((call) => call.context.batch);
+    assert.deepEqual(batches, [["src/a.txt", "src/b.txt", "src/c.txt"], ["src/d.txt", "src/e.txt", "src/f.txt"], ["src/g.txt"]]);
+    assert.equal(h.calls.filter((call) => call.role === "Verify").length, 6);
+    assert.equal(h.calls.some((call) => call.role === "Commit"), false);
+    assert.deepEqual(result.findings.map((entry) => [entry.id, entry.locations]), [
+        ["ado-rest-client", ["src/b.txt", "src/e.txt"]], ["ado-pipeline", ["azure-pipelines.yml:1"]],
     ]);
-    await assert.rejects(() => exhaustiveTask.run(h.ctx), /PAUSED:round-limit/);
-    await writeFile(f.path, "user revision\n");
-    const result = await exhaustiveTask.run(h.ctx);
-    assert.equal(result.status, "blocked");
-    assert.match(result.reason, /changed at the round checkpoint/);
-    assert.equal(h.calls.length, 4);
+    const reviews = h.calls.filter((call) => call.role === "Work" && !call.context.batch.length);
+    assert.deepEqual(reviews.at(-1).context.previousStrategies, ["searched pipelines", "strategy 5"]);
+    assert.deepEqual(reviews[1].context.ledger.findings.map((entry) => entry.id), ["ado-rest-client", "ado-pipeline"]);
+    const ledger = await readFile(f.args.ledgerPath, "utf8");
+    assert.match(ledger, /7\/7 units processed, 2 findings/);
+    assert.match(ledger, /### Title ado-pipeline/);
+    assert.match(ledger, /searched pipelines/);
+    assert.doesNotMatch(ledger, /strategy 5/);
 });
 
-test("invalid arguments and paths are rejected before any model calls", async () => {
-    for (const args of [
-        null, {}, { goal: " ", acceptance: "done", scope: ["."] },
-        { goal: "goal", acceptance: "", scope: ["."] },
-        { goal: "goal", acceptance: "done", scope: [] },
-        { goal: "goal", acceptance: "done", scope: [".."] },
-        { goal: "goal", acceptance: "done", scope: [resolve(".")] },
-        { goal: "goal", acceptance: "done", scope: [".git"] },
-    ]) {
-        const h = harness({ args }, []);
-        await assert.rejects(() => exhaustiveTask.run(h.ctx), /goal|acceptance|scope|baselinePath/);
-        assert.equal(h.calls.length, 0);
-    }
-});
-
-test("a missed cross-file item is discovered and executed in a second foreach round", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])],
-        ["Work:1:integration-a", work(f, "a documented\n")],
-        ["Verify:1:integration-a:", verification()],
-        ["Audit:1:", inventory([b])],
-        ["Work:2:integration-b", work(f, "a and b documented\n")],
-        ["Verify:2:integration-b:", verification()],
-        ["Audit:2:", inventory()],
-    ]);
-    const result = await exhaustiveTask.run(h.ctx);
+test("rejected findings stay out of the ledger and incomplete rounds are repaired", async (t) => {
+    const f = await filesFixture(t, 2, { batchSize: 2, quietRounds: 1 });
+    const h = harness(f.args, defaultHandler({
+        Work: ({ context, round }) => round === 1 ? work(context.batch, [finding("real-hit", "src/a.txt"), finding("fake-hit", "src/b.txt")]) : undefined,
+        Verify: ({ round, attempt }) => round === 1 ? (attempt === 1
+            ? report({ complete: false, remaining: "Inspect src/b.txt again", rejected: [] })
+            : verified({ rejected: ["fake-hit"] })) : undefined,
+    }));
+    const result = await h.run();
     assert.equal(result.status, "complete");
-    assert.equal(result.round, 2);
-    assert.deepEqual(result.completed.map((entry) => entry.item.id), [a.id, b.id]);
-    assert.deepEqual(result.pending, []);
-    assert.equal(await readFile(f.path, "utf8"), "a and b documented\n");
-    assert.ok(h.calls.every((call) => !call.model && !call.reasoningEffort && !call.contextTier));
-    const audit = h.calls.find((call) => call.label.startsWith("Audit:2:"));
-    assert.equal(audit.context.manifest.length, 1);
-    assert.match(audit.context.manifest[0], /output\.txt$/);
+    const repair = h.calls.find((call) => call.role === "Work" && call.attempt === 2);
+    assert.equal(repair.context.repair, "Inspect src/b.txt again");
+    assert.deepEqual(result.findings.map((entry) => entry.id), ["real-hit"]);
+    assert.doesNotMatch(await readFile(f.args.ledgerPath, "utf8"), /fake-hit/);
 });
 
-test("work is sequential and each item is verified before the next worker", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a, b])],
-        ["Work:1:integration-a", work(f, "a\n")],
-        ["Verify:1:integration-a:", verification()],
-        ["Work:1:integration-b", work(f, "a b\n")],
-        ["Verify:1:integration-b:", verification()],
-        ["Audit:1:", inventory()],
-    ]);
-    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
-    for (const call of h.calls) {
-        assert.match(call.prompt, /Do not delegate/);
-        assert.match(call.prompt, /Only Work agents may edit/);
-        assert.match(call.prompt, /Only Commit agents may stage and commit/);
-    }
-    assert.deepEqual(h.events.map((call) => call.label.split(":")[0]), [
-        "Inventory", "Work", "Verify", "Commit", "Work", "Verify", "Commit", "Audit",
-    ]);
-    assert.equal(h.commitCalls.length, 2);
-    for (const call of h.commitCalls) {
-        assert.match(call.prompt, /agent-skills:git-workflow-and-versioning/);
-        assert.match(call.prompt, /never git add -A/);
-        assert.match(call.prompt, /original baseline and earlier save points/);
-        assert.equal(call.context.baselinePath, f.args.baselinePath);
-    }
+test("rounds block on uncovered batches, persistent verification failures and verifier mutations", async (t) => {
+    const f = await filesFixture(t, 2, { batchSize: 2 });
+    const partial = await harness(f.args, defaultHandler({ Work: () => work(["src/a.txt"]) })).run();
+    assert.equal(partial.status, "blocked");
+    assert.equal(partial.phase, "Work");
+
+    const failing = harness(f.args, defaultHandler({
+        Verify: () => report({ complete: false, remaining: "Still missing", rejected: [] }),
+    }));
+    const stuck = await failing.run();
+    assert.equal(stuck.phase, "Verify");
+    assert.equal(failing.calls.filter((call) => call.role === "Work").length, 3);
+
+    const mutating = await harness(f.args, defaultHandler({
+        Verify: async () => {
+            await writeFile(join(f.path, "src", "a.txt"), "changed by verifier\n");
+            return verified();
+        },
+    })).run();
+    assert.equal(mutating.status, "blocked");
+    assert.match(mutating.reason, /read-only verification/);
 });
 
-test("missing, failed or unevidenced commit receipts stop before the next item and audit", async (t) => {
-    const f = await fixture(t);
-    for (const commit of [
-        null, receipt({ commit: "short" }), receipt({ checks: [] }),
-        receipt({ checks: [{ ...check, outcome: "failed" }] }),
-        receipt({ questions: ["May these overlapping staged changes be included?"] }),
-        receipt({ status: "blocked" }), receipt({ outcome: "unchanged" }),
-    ]) {
-        const h = harness(f, [
-            ["Inventory:0", inventory([a, b])],
-            ["Work:1:", report()], ["Verify:1:", verification()],
-        ], commit);
-        const result = await exhaustiveTask.run(h.ctx);
-        assert.equal(result.status, "blocked");
-        assert.equal(result.phase, "Commit");
-        assert.equal(result.completed.length, 0);
-        assert.deepEqual(result.pending, [a, b]);
-        assert.deepEqual(result.needsInput, commit?.questions ?? []);
-        assert.equal(h.calls.length, 3);
-    }
-});
-
-test("evidenced unchanged items do not require an empty commit", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", report()],
-        ["Verify:1:", verification()], ["Audit:1:", inventory()],
-    ], receipt({ outcome: "unchanged", commit: "" }));
-    const result = await exhaustiveTask.run(h.ctx);
+test("changed rounds are committed with the ledger while pre-existing edits are reported", async (t) => {
+    const f = await filesFixture(t, 2, { batchSize: 2, quietRounds: 1 });
+    await writeFile(join(f.path, "other", "skip.txt"), "user edit\n");
+    const ledgerPath = join(f.path, "docs", "ledger.md");
+    const h = harness({ ...f.args, ledgerPath }, defaultHandler({
+        Work: async ({ context }) => {
+            if (!context.batch.length) return undefined;
+            await writeFile(join(f.path, "src", "a.txt"), "cleaned\n");
+            return work(context.batch, [], ["src/a.txt: cleaned"]);
+        },
+        Commit: ({ context }) => {
+            assert.deepEqual(context.changedRepos, [f.path]);
+            assert.deepEqual(context.preExisting[f.path], ["other/skip.txt"]);
+            git(f.path, "add", "src/a.txt", "docs/ledger.md");
+            git(f.path, "commit", "-qm", "refactor: clean batch");
+            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
+        },
+    }));
+    const result = await h.run();
     assert.equal(result.status, "complete");
-    assert.equal(result.completed[0].commit.outcome, "unchanged");
+    assert.equal(result.commits.length, 1);
+    assert.equal(git(f.path, "status", "--porcelain"), "M other/skip.txt");
+    assert.match(git(f.path, "show", "HEAD:docs/ledger.md"), /src\/a.txt: cleaned/);
 });
 
-test("incomplete item verification never invokes the commit agent", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", report()],
-        ["Verify:1:", verification({ complete: false, remaining: "Still missing" })],
-        ["Audit:1:", inventory([a])],
-    ]);
-    assert.equal((await exhaustiveTask.run(h.ctx)).status, "blocked");
-    assert.equal(h.commitCalls.length, 0);
-});
-
-test("verifier or commit-agent content edits invalidate the save point", async (t) => {
-    const f = await fixture(t);
-    const verifier = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", report()],
-        ["Verify:1:", async () => {
-            await writeFile(f.path, "verifier edit\n");
-            return verification();
-        }],
-    ]);
-    assert.equal((await exhaustiveTask.run(verifier.ctx)).phase, "Verify");
-    assert.equal(verifier.commitCalls.length, 0);
-    const committer = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", report()], ["Verify:1:", verification()],
-    ], async () => {
-        await writeFile(f.path, "commit agent edit\n");
-        return receipt();
+test("commit reports must account for every changed repository and keep contents unchanged", async (t) => {
+    const f = await filesFixture(t, 1, { batchSize: 1 });
+    const changing = defaultHandler({
+        Work: async ({ context }) => {
+            await writeFile(join(f.path, "src", "a.txt"), "changed\n");
+            return work(context.batch, [], ["src/a.txt: changed"]);
+        },
+        Commit: () => report({ commits: [], uncommitted: [] }),
     });
-    const result = await exhaustiveTask.run(committer.ctx);
+    const result = await harness(f.args, changing).run();
     assert.equal(result.status, "blocked");
     assert.equal(result.phase, "Commit");
 });
 
-test("a verifier's repair remains queued even when the audit incorrectly returns no items", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])],
-        ["Work:1:", work(f, "partial\n")],
-        ["Verify:1:", verification({ complete: false, remaining: "Document the error path" })],
-        ["Audit:1:", inventory()],
-        ["Work:2:", async (context) => {
-            assert.equal(context.repair, "Document the error path");
-            return work(f, "complete including error path\n")();
-        }],
-        ["Verify:2:", verification()],
-        ["Audit:2:", inventory()],
-    ]);
-    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
-});
-
-test("an audit can reopen an independently verified item", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])],
-        ["Work:1:", work(f, "partial\n")],
-        ["Verify:1:", verification()],
-        ["Audit:1:", inventory([a], { summary: "Error handling is missing" })],
-        ["Work:2:", async (context) => {
-            assert.equal(context.lastAudit.summary, "Error handling is missing");
-            return work(f, "complete\n")();
-        }],
-        ["Verify:2:", verification()],
-        ["Audit:2:", inventory()],
-    ]);
-    const result = await exhaustiveTask.run(h.ctx);
+test("repos mode discovers repositories and processes one per round by default", async (t) => {
+    const root = await temp(t);
+    const a = await repo(join(root, "a"), { "Program.cs": "a\n" });
+    const b = await repo(join(root, "group", "b"), { "Program.cs": "b\n" });
+    await repo(join(root, "node_modules", "c"), { "x.txt": "c\n" });
+    await mkdir(join(root, "plain"));
+    const h = harness({
+        goal: "Update packages, then change X in Program.cs", acceptance: "Builds pass", mode: "repos",
+        paths: [root], ledgerPath: join(root, "ledger.md"), quietRounds: 1,
+    }, defaultHandler());
+    const result = await h.run();
     assert.equal(result.status, "complete");
-    assert.equal(result.completed.length, 1);
-    assert.equal(result.completed[0].work.status, "ready");
+    assert.deepEqual(h.calls.filter((call) => call.role === "Work").map((call) => call.context.batch), [[a], [b], []]);
+    assert.deepEqual(h.calls[0].context.repos, [a, b]);
 });
 
-test("an initially empty inventory still requires a separate complete audit", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [["Inventory:0", inventory()], ["Audit:1:", inventory()]]);
-    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
-    assert.equal(h.calls.length, 2);
+test("search mode has no units and stops after the configured quiet review rounds", async (t) => {
+    const root = await temp(t);
+    const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
+    const h = harness({
+        goal: "Find every difference between the design export and the implementation", acceptance: "All listed",
+        mode: "search", paths: [path], ledgerPath: join(root, "ledger.md"),
+    }, defaultHandler({
+        Work: ({ round }) => round === 1 ? work([], [finding("header-color", "app.ts:1"), finding("footer-gap", "app.ts:2")], [], "compared screens") : undefined,
+    }));
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.equal(result.round, 3);
+    assert.equal(result.findings.length, 2);
 });
 
-test("new untracked scoped files appear in the full-scope audit manifest", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])],
-        ["Work:1:", async () => {
-            await writeFile(join(f.directory, "new.txt"), "new integration\n");
-            return report();
-        }],
-        ["Verify:1:", verification()],
-        ["Audit:1:", (context) => {
-            assert.equal(context.manifest.length, 2);
-            assert.ok(context.manifest.some((path) => path.endsWith("/new.txt")));
-            return inventory();
-        }],
-    ]);
-    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
+test("a new run with the same ledger continues after processed units and rejects foreign ledgers", async (t) => {
+    const f = await filesFixture(t, 4, { batchSize: 2, quietRounds: 1 });
+    const first = await harness(f.args, defaultHandler({
+        Work: ({ context, round }) => round === 1 ? work(context.batch, [finding("early-hit", "src/a.txt")])
+            : report({ status: "blocked", processed: [], findings: [], changes: [], strategy: "", questions: ["Which org?"] }),
+    })).run();
+    assert.equal(first.status, "blocked");
+    assert.deepEqual(first.needsInput, ["Which org?"]);
+    assert.deepEqual(first.remainingUnits, ["src/c.txt", "src/d.txt"]);
+
+    const second = harness(f.args, defaultHandler());
+    const result = await second.run();
+    assert.equal(result.status, "complete");
+    assert.deepEqual(second.calls[0].context.batch, ["src/c.txt", "src/d.txt"]);
+    assert.deepEqual(result.findings.map((entry) => entry.id), ["early-hit"]);
+    assert.match(await readFile(f.args.ledgerPath, "utf8"), /4\/4 units processed/);
+
+    await assert.rejects(harness({ ...f.args, goal: "Another goal" }, defaultHandler()).run(), /different goal/);
+    await writeFile(f.args.ledgerPath, "# Someone else's notes\n");
+    await assert.rejects(harness(f.args, defaultHandler()).run(), /not an exhaustive-task ledger/);
 });
 
-test("null, incomplete coverage, duplicate IDs and missing evidence never count as an inventory", async (t) => {
-    const f = await fixture(t);
-    for (const answer of [
-        null, inventory([], { coverage: [] }), inventory([a, a]),
-        inventory([], { evidence: [] }), inventory([], { status: "blocked" }),
-    ]) {
-        const h = harness(f, [["Inventory:0", answer]]);
-        assert.equal((await exhaustiveTask.run(h.ctx)).status, "blocked");
-        assert.equal(h.calls.length, 1);
-    }
-});
+test("round ceilings pause for approval and block on edits made while paused", async (t) => {
+    const f = await filesFixture(t, 3, { batchSize: 1, quietRounds: 1, maxRounds: 2 });
+    const h = harness(f.args, defaultHandler());
+    await assert.rejects(h.run, /PAUSED:round-limit-v2:2/);
+    assert.match(h.logs.join("\n"), /APPROVAL REQUIRED: round-limit:2/);
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.equal(h.calls.filter((call) => call.role === "Work").length, 4);
 
-test("null workers and human decisions stop with pending work, not success", async (t) => {
-    const f = await fixture(t);
-    for (const answer of [null, report({ questions: ["Which API version?"] })]) {
-        const h = harness(f, [["Inventory:0", inventory([a])], ["Work:1:", answer]]);
-        const result = await exhaustiveTask.run(h.ctx);
-        assert.equal(result.status, "blocked");
-        assert.deepEqual(result.pending, [a]);
-        assert.deepEqual(result.needsInput, answer?.questions ?? []);
-    }
-});
-
-test("completion requires passing nonempty checks from verifier and final auditor", async (t) => {
-    const f = await fixture(t);
-    for (const checks of [[], [{ ...check, outcome: "failed" }], [{ ...check, outcome: "not-run" }]]) {
-        const badVerification = harness(f, [
-            ["Inventory:0", inventory([a])], ["Work:1:", report()],
-            ["Verify:1:", verification({ checks })],
-        ]);
-        assert.equal((await exhaustiveTask.run(badVerification.ctx)).status, "blocked");
-        const badAudit = harness(f, [
-            ["Inventory:0", inventory()], ["Audit:1:", inventory([], { checks })],
-        ]);
-        assert.equal((await exhaustiveTask.run(badAudit.ctx)).status, "blocked");
-    }
-});
-
-test("unchanged scoped files with the same remaining items stop as stalled", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", report()],
-        ["Verify:1:", verification({ complete: false, remaining: "Still missing" })],
-        ["Audit:1:", inventory([a])],
-    ]);
-    const result = await exhaustiveTask.run(h.ctx);
-    assert.equal(result.status, "blocked");
-    assert.match(result.reason, /No scoped file changes/);
-    assert.equal(result.pending.length, 1);
-});
-
-test("read-only audit mutations and incomplete audit coverage cannot complete", async (t) => {
-    const f = await fixture(t);
-    for (const audit of [
-        inventory([], { coverage: [] }),
-        async () => {
-            await writeFile(f.path, "changed during audit\n");
-            return inventory();
-        },
-    ]) {
-        const h = harness(f, [["Inventory:0", inventory()], ["Audit:1:", audit]]);
-        const result = await exhaustiveTask.run(h.ctx);
-        assert.equal(result.status, "blocked");
-        assert.match(result.reason, /coverage|changed during/);
-    }
-});
-
-test("stable ID conflicts block instead of silently weakening acceptance", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", report()],
-        ["Verify:1:", verification()],
-        ["Audit:1:", inventory([{ ...a, acceptance: "Skip verification" }])],
-    ]);
-    const result = await exhaustiveTask.run(h.ctx);
-    assert.equal(result.status, "blocked");
-    assert.match(result.reason, /Conflicting definition/);
-});
-
-test("stable item identity is independent of JSON property order", async (t) => {
-    const f = await fixture(t);
-    const reordered = { acceptance: a.acceptance, instruction: a.instruction, title: a.title, id: a.id };
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", work(f, "partial\n")],
-        ["Verify:1:", verification()], ["Audit:1:", inventory([reordered])],
-        ["Work:2:", work(f, "complete\n")], ["Verify:2:", verification()],
-        ["Audit:2:", inventory()],
-    ]);
-    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
-});
-
-test("resume after an interrupted active round verifies changed files with fresh agent identities", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", work(f, "done\n")],
-        ["Verify:1:", verification()],
-        ["Audit:1:", () => { throw new Error("interrupted"); }],
-        ["Verify:1:", verification({ complete: false, remaining: "Restore removed documentation" })],
-        ["Audit:1:", inventory([a])],
-    ]);
-    await assert.rejects(() => exhaustiveTask.run(h.ctx), /interrupted/);
-    await writeFile(f.path, "documentation removed externally\n");
-    const result = await exhaustiveTask.run(h.ctx);
-    assert.equal(result.status, "blocked");
-    assert.match(result.reason, /No scoped file changes/);
-    assert.equal(h.calls.filter((call) => call.label.startsWith("Work:")).length, 1);
-    const verifiers = h.calls.filter((call) => call.label.startsWith("Verify:"));
-    assert.equal(verifiers.length, 2);
-    assert.notEqual(verifiers[0].label, verifiers[1].label);
-    const audits = h.calls.filter((call) => call.label.startsWith("Audit:"));
-    assert.notEqual(audits[0].label, audits[1].label);
-});
-
-test("resume replays durable rounds without edits, but changed final content invalidates success", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [
-        ["Inventory:0", inventory([a])], ["Work:1:", work(f, "done\n")],
-        ["Verify:1:", verification()], ["Audit:1:", inventory()],
-    ]);
-    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
-    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
-    assert.equal(h.calls.length, 4);
-    await writeFile(f.path, "external change\n");
-    const stale = await exhaustiveTask.run(h.ctx);
-    assert.equal(stale.status, "blocked");
-    assert.match(stale.reason, /differs from the journaled final audit/);
-});
-
-test("cancellation and hard runtime errors propagate without success-shaped fallback", async (t) => {
-    const f = await fixture(t);
-    const h = harness(f, [["Inventory:0", () => { throw new Error("workflow_limit_reached"); }]]);
-    await assert.rejects(() => exhaustiveTask.run(h.ctx), /workflow_limit_reached/);
+    await rm(f.args.ledgerPath);
+    const edited = harness(f.args, defaultHandler());
+    await assert.rejects(edited.run, /PAUSED:round-limit-v2:2/);
+    await writeFile(join(f.path, "src", "c.txt"), "edited during pause\n");
+    const blocked = await edited.run();
+    assert.equal(blocked.status, "blocked");
+    assert.match(blocked.reason, /paused/);
 });
