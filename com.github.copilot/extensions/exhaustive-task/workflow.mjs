@@ -216,6 +216,41 @@ async function snapshot(repos) {
     return { trees, fingerprint: sha(JSON.stringify(trees)) };
 }
 
+const optional = (repo, args) => git(repo, args).then((out) => out.trim() || null, () => null);
+
+// Commits, staging and branch switches keep content trees intact, so read-only checks also compare Git state.
+async function gitState(repos) {
+    const parts = [];
+    for (const repo of repos) {
+        parts.push(await git(repo, ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"]));
+    }
+    return sha(JSON.stringify(parts));
+}
+
+async function branches(repos) {
+    const result = {};
+    for (const repo of repos) {
+        const remote = await optional(repo, ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"]);
+        result[repo] = {
+            branch: await optional(repo, ["symbolic-ref", "-q", "--short", "HEAD"]),
+            head: await optional(repo, ["rev-parse", "-q", "--verify", "HEAD"]),
+            defaults: remote ? [remote.slice(remote.indexOf("/") + 1)] : ["main", "master"],
+        };
+    }
+    return result;
+}
+
+async function branchProblem(repos, start) {
+    const now = await branches(repos);
+    for (const repo of repos) {
+        if (now[repo].branch !== start[repo].branch) return `Work changed branches in ${repo}.`;
+        if (now[repo].head !== start[repo].head && (!now[repo].branch || now[repo].defaults.includes(now[repo].branch))) {
+            return `Work committed on a default or detached branch in ${repo}.`;
+        }
+    }
+    return null;
+}
+
 async function dirty(repo) {
     const parts = (await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).split("\0");
     const paths = [];
@@ -239,8 +274,8 @@ async function loadLedger(path, args, scope) {
     const end = content.indexOf("-->", start);
     if (start < 0 || end < 0) throw new Error("ledgerPath exists but is not an exhaustive-task ledger; choose another path.");
     const state = JSON.parse(content.slice(start + marker.length, end));
-    if (state.version !== 1 || state.goal !== args.goal || state.mode !== args.mode) {
-        throw new Error("ledgerPath belongs to a different goal or mode; choose another path.");
+    if (state.version !== 1 || state.goal !== args.goal || state.mode !== args.mode || state.acceptance !== args.acceptance) {
+        throw new Error("ledgerPath belongs to a different goal, acceptance or mode; choose another path.");
     }
     if (JSON.stringify(state.scope) !== JSON.stringify(scope)) {
         throw new Error("ledgerPath belongs to a different repository or paths; choose another path.");
@@ -266,7 +301,7 @@ function render(state, total) {
         lines.push("");
     }
     if (state.reviews.length) {
-        lines.push("## Review rounds with results", "");
+        lines.push("## Review rounds", "");
         for (const review of state.reviews) {
             lines.push(`- Round ${review.round}: ${review.strategy} (new: ${review.newFindings.join(", ") || "none"}; ` +
                 `new locations: ${review.newLocations ?? 0}; changes: ${review.changes})`);
@@ -310,7 +345,8 @@ function apply(state, result, run) {
     }
     if (result.batch) state.processed.push(...result.batch);
     if (result.changes.length) state.changes.push({ run, round: result.round, items: result.changes });
-    if (!result.batch && (newFindings.length || newLocations || result.changes.length)) {
+    // Quiet strategies are kept too, so later rounds and runs do not repeat them.
+    if (!result.batch) {
         state.reviews.push({ run, round: result.round, strategy: result.strategy, newFindings, newLocations,
             changes: result.changes.length });
     }
@@ -414,9 +450,9 @@ export const exhaustiveTask = {
             version: 1, goal: ctx.args.goal, mode: ctx.args.mode, acceptance: ctx.args.acceptance, scope: config.scope,
             processed: [], findings: [], changes: [], reviews: [],
         };
-        state.acceptance = ctx.args.acceptance;
         const todo = plan.units.filter((unit) => !state.processed.includes(unit));
-        const total = plan.units.length || state.processed.length;
+        // Continued ledgers may cover other paths or since-deleted files; count everything the ledger covers.
+        const total = new Set([...plan.units, ...state.processed]).size;
         const reviews = [];
         const write = async (value) => {
             await mkdir(dirname(config.ledgerPath), { recursive: true });
@@ -461,6 +497,7 @@ export const exhaustiveTask = {
                 ctx.phase("Verify");
                 const final = await ctx.step(`final-v1:${round}`, async () => {
                     const current = await snapshot(plan.repos);
+                    const metadata = await gitState(plan.repos);
                     const verification = verdict(await call(`Final:${round}:${current.fingerprint}`, finalInstruction,
                         { round, ledger: { findings: state.findings, processedCount: state.processed.length },
                             previousStrategies: strategies() }, verifySchema, verifyModel));
@@ -471,8 +508,9 @@ export const exhaustiveTask = {
                             !nonempty(verification.remaining))) {
                         return { blocked: "Final verification is blocked, unevidenced or inconsistent.", verification };
                     }
-                    if ((await snapshot(plan.repos)).fingerprint !== current.fingerprint) {
-                        return { blocked: "Files changed during read-only final verification.", verification };
+                    if ((await snapshot(plan.repos)).fingerprint !== current.fingerprint ||
+                        await gitState(plan.repos) !== metadata) {
+                        return { blocked: "Files or Git state changed during read-only final verification.", verification };
                     }
                     return { verification };
                 });
@@ -509,13 +547,14 @@ export const exhaustiveTask = {
             ctx.log(batch ? `Round ${round}: ${batch.length} units (${cursor + batch.length}/${todo.length})`
                 : `Round ${round}: review (${quiet}/${config.quietRounds} quiet)`);
             // Journal the pre-round snapshot so a resumed round still sees its own edits as changes.
-            const before = await ctx.step(`round-before-v1:${round}`, async () => {
+            const before = await ctx.step(`round-before-v2:${round}`, async () => {
                 const current = await snapshot(plan.repos);
                 if (checkpoint !== null && current.fingerprint !== checkpoint) return { paused: true };
                 // Kept edits from a blocked round are measured from that round's start, so they are verified.
                 const pending = state.pending;
-                return pending && current.fingerprint !== pending.fingerprint
+                const start = pending && current.fingerprint !== pending.fingerprint
                     ? { trees: pending.trees, fingerprint: pending.fingerprint } : current;
+                return { ...start, branches: await branches(plan.repos) };
             });
             if (before.paused) return stop("Work", "Files changed while paused at the round checkpoint; start a new run.");
             const result = await ctx.step(`round-v2:${round}`, async () => {
@@ -555,6 +594,8 @@ export const exhaustiveTask = {
                         return blocked("Work", batch ? "Work report is blocked, unevidenced or does not cover " +
                             "exactly the batch." : "Review report is blocked, unevidenced or lacks a strategy.", work);
                     }
+                    const moved = await branchProblem(plan.repos, before.branches);
+                    if (moved) return blocked("Work", moved, work);
                     if (fix !== null) for (const entry of work.findings) corrected.add(entry.id);
                     if (previous) {
                         // Repair attempts often report only what they fixed; keep what earlier attempts found.
@@ -571,6 +612,7 @@ export const exhaustiveTask = {
                         break;
                     }
                     ctx.phase("Verify");
+                    const metadata = await gitState(plan.repos);
                     verification = verdict(await call(`Verify:${round}:${attempt}:${current.fingerprint}`,
                         verifyInstruction, { ...context, work }, verifySchema, verifyModel));
                     const ids = work.findings.map((finding) => finding.id);
@@ -580,8 +622,9 @@ export const exhaustiveTask = {
                             !nonempty(verification.remaining))) {
                         return blocked("Verify", "Verification is blocked, unevidenced or inconsistent.", verification);
                     }
-                    if ((await snapshot(plan.repos)).fingerprint !== current.fingerprint) {
-                        return blocked("Verify", "Files changed during read-only verification.", verification);
+                    if ((await snapshot(plan.repos)).fingerprint !== current.fingerprint ||
+                        await gitState(plan.repos) !== metadata) {
+                        return blocked("Verify", "Files or Git state changed during read-only verification.", verification);
                     }
                     for (const id of verification.rejected) refused.add(id);
                     if (verification.complete) break;

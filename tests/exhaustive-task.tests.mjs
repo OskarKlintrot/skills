@@ -150,7 +150,7 @@ test("files mode covers every scoped file in batches, then reviews until quiet",
     assert.match(ledger, /7\/7 units processed, 2 findings/);
     assert.match(ledger, /### Title ado-pipeline/);
     assert.match(ledger, /searched pipelines/);
-    assert.doesNotMatch(ledger, /strategy 5/);
+    assert.match(ledger, /Round 5: strategy 5 \(new: none; new locations: 0; changes: 0\)/);
 });
 
 test("final verification rejects findings, reopens the search and passes models through", async (t) => {
@@ -258,10 +258,52 @@ test("rounds block on uncovered batches, persistent verification failures and ve
     })).run();
     assert.equal(mutating.status, "blocked");
     assert.match(mutating.reason, /read-only verification/);
+
+    git(f.path, "checkout", "-q", "--", ".");
+    git(f.path, "checkout", "-qb", "feature");
+    const committing = await harness(f.args, defaultHandler({
+        Work: async ({ context }) => {
+            await writeFile(join(f.path, "src", "b.txt"), "work to verify\n");
+            return work(context.batch, [], ["src/b.txt: changed"]);
+        },
+        Verify: async () => {
+            git(f.path, "add", "src/b.txt");
+            git(f.path, "commit", "-qm", "verifier commit");
+            return verified();
+        },
+    })).run();
+    assert.equal(committing.status, "blocked");
+    assert.match(committing.reason, /Git state changed during read-only verification/);
+});
+
+test("worker commits on a default or detached branch, or branch switches, block the round", async (t) => {
+    const f = await filesFixture(t, 1, { batchSize: 1 });
+    git(f.path, "checkout", "-qB", "main");
+    let edits = 0;
+    const committer = (switchTo) => defaultHandler({
+        Work: async ({ context }) => {
+            if (switchTo) git(f.path, "checkout", "-q", switchTo);
+            await writeFile(join(f.path, "src", "a.txt"), `cleaned ${++edits}\n`);
+            git(f.path, "commit", "-qm", "refactor: clean", "--", "src/a.txt");
+            return work(context.batch, [], ["src/a.txt: cleaned"]);
+        },
+    });
+    const onDefault = await harness(f.args, committer(null)).run();
+    assert.equal(onDefault.status, "blocked");
+    assert.match(onDefault.reason, /default or detached branch/);
+
+    git(f.path, "checkout", "-q", "--detach");
+    const detached = await harness(f.args, committer(null)).run();
+    assert.match(detached.reason, /default or detached branch/);
+
+    git(f.path, "branch", "-q", "elsewhere");
+    const switched = await harness(f.args, committer("elsewhere")).run();
+    assert.match(switched.reason, /changed branches/);
 });
 
 test("there is no commit step; edits a worker commits itself are still verified", async (t) => {
     const f = await filesFixture(t, 2, { batchSize: 2, quietRounds: 1 });
+    git(f.path, "checkout", "-qb", "feature");
     await writeFile(join(f.path, "other", "skip.txt"), "user edit\n");
     const head = git(f.path, "rev-parse", "HEAD");
     const h = harness({ ...f.args, goal: "Clean every file and commit each batch" }, defaultHandler({
@@ -365,6 +407,8 @@ test("a new run with the same ledger continues after processed units and rejects
     assert.match(await readFile(f.args.ledgerPath, "utf8"), /4\/4 units processed/);
 
     await assert.rejects(harness({ ...f.args, goal: "Another goal" }, defaultHandler()).run(), /different goal/);
+    await assert.rejects(harness({ ...f.args, acceptance: "Looser criteria" }, defaultHandler()).run(),
+        /different goal, acceptance/);
     inside(await repo(join(f.root, "other-repo"), { "src/a.txt": "a\n", "src/z.txt": "z\n" }));
     await assert.rejects(harness(f.args, defaultHandler()).run(), /different repository/);
     inside(f.path);
@@ -533,6 +577,15 @@ test("edits kept from a blocked round are verified by the next run", async (t) =
     assert.equal(next.calls.filter((call) => call.role === "Verify").length, 1);
     assert.equal(git(f.path, "status", "--porcelain"), "M src/a.txt");
     assert.doesNotMatch(await readFile(f.args.ledgerPath, "utf8"), /"pending"/);
+});
+
+test("a continued ledger counts units from earlier paths in its progress", async (t) => {
+    const f = await filesFixture(t, 2, { batchSize: 2, quietRounds: 1 });
+    assert.equal((await harness(f.args, defaultHandler()).run()).status, "complete");
+    const result = await harness({ ...f.args, paths: ["other"] }, defaultHandler()).run();
+    assert.equal(result.status, "complete");
+    assert.equal(result.total, 3);
+    assert.match(await readFile(f.args.ledgerPath, "utf8"), /3\/3 units processed/);
 });
 
 test("a continued ledger may have no scoped files left", async (t) => {
