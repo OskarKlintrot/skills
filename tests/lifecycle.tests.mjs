@@ -11,7 +11,7 @@ const report = (extra = {}) => ({
     status: "ready", summary: "Ready", evidence: ["SPEC.md"], checks: [check], questions: [], ...extra,
 });
 const responses = () => ({
-    Define: report(),
+    Define: report({ specPath: join("tests", "fixtures", "lifecycle-spec.md") }),
     "Commit:spec": report({ commit }),
     Plan: report({ tasks: [task("second", ["first"]), task("first")], completed: [] }),
     "Commit:plan": report({ commit }),
@@ -24,10 +24,7 @@ const responses = () => ({
     Ship: report({ verdict: "GO", rollback: "Revert the release and verify health" }),
 });
 
-function harness(overrides = {}, args = {
-    goal: "Build a feature", specPath: join("tests", "fixtures", "lifecycle-spec.md"),
-    baselinePath: "session-baseline.json",
-}) {
+function harness(overrides = {}, args = { goal: "Build a feature" }) {
     const answers = { ...responses(), ...overrides };
     const journal = new Map();
     const checkpoints = new Set();
@@ -93,59 +90,124 @@ test("invalid arguments fail before spawning agents", async () => {
     }
 });
 
-test("review steps select packaged Addy personas without changing other agents or models", async () => {
+test("lifecycle uses the required skills and specialist personas without fixing runtime models", async () => {
     const h = harness();
     await approvePlan(h);
     await lifecycle.run(h.ctx);
+    const skills = {
+        Define: ["agent-skills:spec-driven-development"],
+        Plan: ["agent-skills:planning-and-task-breakdown"],
+        "Build:first": ["agent-skills:incremental-implementation", "agent-skills:test-driven-development"],
+        Verify: ["agent-skills:test-driven-development"],
+        "Review:code": ["agent-skills:code-review-and-quality"],
+        "Review:security": ["agent-skills:security-and-hardening"],
+        "Review:tests": ["agent-skills:test-driven-development"],
+        Ship: ["agent-skills:shipping-and-launch"],
+    };
     const personas = {
         "Review:code": "oskar-tools:code-reviewer",
         "Review:security": "oskar-tools:security-auditor",
         "Review:tests": "oskar-tools:test-engineer",
     };
     for (const call of h.calls) {
+        for (const skill of skills[call.label] ?? []) assert.ok(call.prompt.includes(skill), call.label);
         assert.equal(call.agent, personas[call.label], call.label);
-        assert.equal(call.model, undefined);
-        if (personas[call.label]) {
-            assert.match(call.prompt, /structured report.*persona.*template/i);
-        }
+        assert.equal(call.model, undefined, call.label);
     }
 });
 
-test("a goal alone cannot start unattended requirements discovery", async () => {
+test("a goal alone starts lifecycle definition without external spec or baseline inputs", async () => {
     const h = harness({}, { goal: "Build a feature" });
-    await assert.rejects(() => lifecycle.run(h.ctx), /specPath/);
-    assert.equal(h.calls.length, 0);
-    assert.ok(lifecycle.meta.argsSchema.required.includes("specPath"));
+    await approveSpec(h);
+    assert.deepEqual(h.calls.map((c) => c.label), ["Define"]);
+    assert.match(h.calls[0].prompt, /write a complete specification/);
+    assert.match(h.logs[0], /# Lifecycle test specification/);
+    assert.deepEqual(lifecycle.meta.argsSchema.required, ["goal"]);
 });
 
-test("workflow uses the same public name as its coordinator skill and command", () => {
+test("workflow uses the same public name as its trigger skill and command", () => {
     assert.equal(lifecycle.meta.name, "addy-lifecycle");
-    assert.match(lifecycle.meta.description, /\/oskar-tools:addy-lifecycle/);
+    assert.match(lifecycle.meta.description, /Standalone Define -> Plan -> Build -> Verify -> Review -> Ship/);
+    assert.match(lifecycle.meta.description, /applicable Addy skills and packaged Review personas/);
 });
 
-test("missing spec files, directories and paths outside the worktree stop before any phase agent", async () => {
+test("missing spec outputs, directories and paths outside the worktree stop after Define", async () => {
     for (const specPath of [join("tests", "fixtures", "missing-spec.md"), ".", ".."]) {
-        const h = harness({}, { goal: "Build a feature", specPath, baselinePath: "session-baseline.json" });
+        const h = harness({ Define: report({ specPath }) });
         const result = await lifecycle.run(h.ctx);
         assert.equal(result.verdict, "NO-GO");
-        assert.equal(h.calls.length, 0);
+        assert.deepEqual(h.calls.map((c) => c.label), ["Define"]);
         assert.match(result.reason, /spec/i);
     }
 });
 
-test("empty or changed spec cannot bypass preparation or reuse stale approval", async () => {
+test("Define cannot take ownership of a spec that was already dirty at workflow start", async () => {
     const directory = await mkdtemp(resolve("tests", "fixtures", "lifecycle-"));
     const path = join(directory, "SPEC.md");
-    const args = {
-        goal: "Build a feature", specPath: relative(process.cwd(), path), baselinePath: "session-baseline.json",
+    try {
+        await writeFile(path, "# User-owned specification");
+        const h = harness({
+            Define: report({ specPath: relative(process.cwd(), path) }),
+        });
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.match(result.needsInput[0].question, /already had uncommitted changes/);
+        assert.deepEqual(h.calls.map((c) => c.label), ["Define"]);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("Define stops when its agent writes files beyond the spec", async () => {
+    const directory = await mkdtemp(resolve("tests", "fixtures", "lifecycle-"));
+    const path = join(directory, "SPEC.md");
+    const unrelated = join(directory, "notes.txt");
+    const h = harness({
+        Define: report({ specPath: relative(process.cwd(), path) }),
+    });
+    const agent = h.ctx.agent;
+    h.ctx.agent = async (prompt, options) => {
+        const result = await agent(prompt, options);
+        if (options.label === "Define") {
+            await writeFile(path, "# Generated specification");
+            await writeFile(unrelated, "Unexpected file");
+        }
+        return result;
     };
     try {
-        await writeFile(path, " ");
-        const empty = harness({}, args);
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.match(result.needsInput[0].question, /outside the spec/);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("empty or changed spec cannot bypass definition or reuse stale approval", async () => {
+    const directory = await mkdtemp(resolve("tests", "fixtures", "lifecycle-"));
+    const path = join(directory, "SPEC.md");
+    const args = { goal: "Build a feature" };
+    const specPath = relative(process.cwd(), path);
+    const writeSpecAfterDefine = (h, content) => {
+        const agent = h.ctx.agent;
+        let written = false;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            if (options.label === "Define" && !written) {
+                written = true;
+                await writeFile(path, content);
+            }
+            return result;
+        };
+    };
+    try {
+        const empty = harness({ Define: report({ specPath }) }, args);
+        writeSpecAfterDefine(empty, " ");
         assert.equal((await lifecycle.run(empty.ctx)).verdict, "NO-GO");
-        assert.equal(empty.calls.length, 0);
-        await writeFile(path, await readFile(join("tests", "fixtures", "lifecycle-spec.md")));
-        const h = harness({}, args);
+        assert.equal(empty.calls.length, 1);
+        await rm(path, { force: true });
+        const h = harness({ Define: report({ specPath }) }, args);
+        writeSpecAfterDefine(h, await readFile(join("tests", "fixtures", "lifecycle-spec.md")));
         await approveSpec(h);
         await writeFile(path, "# Changed scope after approval");
         const result = await lifecycle.run(h.ctx);
@@ -178,18 +240,18 @@ test("every phase routes unanswered questions to the main session without advanc
     }
 });
 
-test("all phase prompts prohibit interactive skills and hand questions back", async () => {
+test("phase prompts route unresolved questions to the user and retain lifecycle guardrails", async () => {
     const h = harness();
     await approvePlan(h);
     await lifecycle.run(h.ctx);
     for (const call of h.calls) {
         assert.match(call.prompt, /Do not call ask_user/);
-        assert.match(call.prompt, /Do not invoke.*interview-me/);
         assert.match(call.prompt, /questions/);
         assert.ok(call.schema.required.includes("questions"));
     }
-    assert.match(h.calls.find((c) => c.label === "Define").prompt, /Read-only/);
-    assert.doesNotMatch(h.calls.find((c) => c.label === "Define").prompt, /Clarify the goal using available user-input/);
+    assert.match(h.calls[0].prompt, /Use phase-specific installed skills and/);
+    assert.match(h.calls.find((c) => c.label === "Define").prompt, /write a complete specification/);
+    assert.match(h.calls.find((c) => c.label === "Define").prompt, /capability map/);
     assert.match(h.calls.find((c) => c.label === "Plan").prompt, /Do not wait/);
     assert.match(h.calls.find((c) => c.label === "Verify").prompt, /assessment only/i);
     assert.match(h.calls.find((c) => c.label === "Verify").prompt, /Do not fix code/);
@@ -336,17 +398,20 @@ test("ship requires evidence and rollback, not just a GO string", async () => {
     }
 });
 
-test("prompts enforce skills, shared-worktree safety and no release actions", async () => {
+test("prompts use the lifecycle policy and enforce shared-worktree safety and no release actions", async () => {
     const h = harness();
     await approvePlan(h);
     await lifecycle.run(h.ctx);
     for (const call of h.calls) {
-        assert.match(call.prompt, /missing.*skill|skill.*unavailable/i);
         assert.match(call.prompt, /Do not delegate/);
         assert.match(call.prompt, /Do not push, merge, or deploy/);
         assert.match(call.prompt, /pre-existing/);
+        assert.doesNotMatch(call.prompt, /do not require or invoke external skills/i);
+        const context = JSON.parse(call.prompt.split("Context (JSON):\n")[1]);
+        assert.equal(typeof context.baseline.head, "string");
+        assert.ok(Array.isArray(context.baseline.untrackedPaths));
     }
-    assert.match(h.calls.find((c) => c.label === "Build:first").prompt, /RED.*GREEN/);
+    assert.match(h.calls.find((c) => c.label === "Build:first").prompt, /test-first loop/);
     assert.match(h.calls.find((c) => c.label === "Review:code").prompt, /Read-only/);
     for (const call of h.calls.filter((c) => c.label.startsWith("Review:"))) {
         assert.match(call.prompt, /completed-task commits, not only the working-tree diff/);
@@ -397,20 +462,23 @@ test("spec and plan commits happen only after their own approvals", async () => 
     await lifecycle.run(h.ctx);
     for (const label of ["Commit:spec", "Commit:plan", "Build:first", "Build:second"]) {
         const call = h.calls.find((c) => c.label === label);
-        assert.match(call.prompt, /agent-skills:git-workflow-and-versioning/);
         assert.match(call.prompt, /git diff --cached/);
         assert.match(call.prompt, /baseline/);
         assert.match(call.prompt, /Do not use git add -A/);
         assert.ok(call.schema.required.includes("commit"));
-        assert.match(call.prompt, /session-baseline.json/);
     }
 });
 
-test("commits require an explicit pre-edit baseline handoff", async () => {
-    const h = harness({}, { goal: "Feature", specPath: "SPEC.md" });
-    await assert.rejects(() => lifecycle.run(h.ctx), /baselinePath/);
-    assert.equal(h.calls.length, 0);
-    assert.ok(lifecycle.meta.argsSchema.required.includes("baselinePath"));
+test("workflow captures the pre-edit Git baseline without caller-supplied paths", async () => {
+    const h = harness({}, { goal: "Feature" });
+    await approveSpec(h);
+    const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+    assert.match(context.baseline.head, /^[a-f0-9]{40,64}$/);
+    assert.equal(typeof context.baseline.status, "string");
+    assert.ok(Array.isArray(context.baseline.stagedPaths));
+    assert.ok(Array.isArray(context.baseline.unstagedPaths));
+    assert.ok(Array.isArray(context.baseline.untrackedPaths));
+    assert.deepEqual(lifecycle.meta.argsSchema.required, ["goal"]);
 });
 
 test("a missing or unsuccessful commit prevents the next phase or task", async () => {
@@ -431,13 +499,15 @@ test("a missing or unsuccessful commit prevents the next phase or task", async (
     }
 });
 
-test("read-only phases cannot commit or modify implementation", async () => {
+test("only assigned phases may write artifacts or implementation", async () => {
     const h = harness();
     await approvePlan(h);
     await lifecycle.run(h.ctx);
-    for (const label of ["Define", "Plan", "Verify", "Review:code", "Review:security", "Review:tests", "Ship"]) {
-        assert.match(h.calls.find((c) => c.label === label).prompt, /Only Commit:spec, Commit:plan and Build may create commits/);
+    for (const label of ["Verify", "Review:code", "Review:security", "Review:tests", "Ship"]) {
+        assert.match(h.calls.find((c) => c.label === label).prompt, /Verify, Review and Ship are read-only/);
     }
+    assert.match(h.calls.find((c) => c.label === "Define").prompt, /Only Define may create a spec/);
+    assert.match(h.calls.find((c) => c.label === "Plan").prompt, /Only Define may create a spec/);
     assert.match(h.calls.find((c) => c.label === "Build:first").prompt,
         /verification.*record.*completion.*commit/i);
 });
