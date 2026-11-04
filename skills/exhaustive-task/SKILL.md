@@ -9,11 +9,13 @@ Coordinate in the **main conversation**. This skill owns preparation, user decis
 round-checkpoint approval and recovery. Workers run autonomously after launch.
 Run the workflow, not a hand-written approximation of its loop.
 
-The workflow processes small batches and records results in a ledger it owns:
-unit rounds (a batch of files or repositories each), then review rounds with
-changing search strategies until `quietRounds` consecutive review rounds find
-nothing new. Every round is Work -> independent read-only Verify -> Commit when
-files changed.
+The workflow replaces asking an agent "did you find everything?" until it stops
+finding things. It processes small batches and records results in a ledger it
+owns: unit rounds (a batch of files or repositories each), then review rounds
+with changing search strategies until `quietRounds` consecutive review rounds
+find nothing new. A final read-only verification then checks the ledger and can
+reopen the search. Rounds that change files are verified and committed; rounds
+that only record findings are not, which keeps discovery cheap.
 
 ## Prepare
 
@@ -27,21 +29,28 @@ files changed.
      working directory.
    - `repos`: the same task per Git repository under absolute `paths`, for
      example "update packages in every repository under C:\repos".
-   - `search`: no enumerable units, for example design versus implementation.
+   - `search`: no enumerable units, for example "find every integration" or
+     design versus implementation. Usually the cheapest choice for discovery.
      Sources workers cannot reach, such as a canvas, must first be exported to a
      file and named in the goal.
 3. Propose an absolute `ledgerPath` and ask the user to confirm or change it:
    in the repository when the ledger is a deliverable (it is committed with each
-   round), otherwise in the session's `files/` folder. An existing ledger for the
-   same goal and mode continues where it stopped; use a new path for a fresh start.
+   round that changes it, which costs a Commit agent per productive round),
+   otherwise in the session's `files/` folder. An existing ledger for the same
+   goal and mode continues where it stopped; use a new path for a fresh start.
 4. Ask with `ask_user` about the batch size: propose 5 for `files` and `search`
-   and 1 for `repos`, or the user's own number.
-5. Ask with `ask_user` whether to use a round ceiling, unless the user already
+   and 1 for `repos`, or the user's own number. In `search` mode it limits
+   changes per round, not findings.
+5. Ask with `ask_user` which models to use, unless the user already said. Propose
+   leaving both to runtime preferences, or a cheaper `model` for workers and
+   commits with an optional stronger `verifyModel` for verification. Never
+   invent model names; use names the user gives or the runtime lists.
+6. Ask with `ask_user` whether to use a round ceiling, unless the user already
    answered for this invocation: no ceiling or a user-chosen positive integer.
    Omit `maxRounds` for no ceiling. Never invent a default. Explain that without a
    ceiling execution continues until completion, a blocker or a runtime limit.
    Set credit/time/agent limits only when the user specifies them.
-6. Load the installed `agent-skills:git-workflow-and-versioning` skill and follow
+7. Load the installed `agent-skills:git-workflow-and-versioning` skill and follow
    repository Git conventions. If unavailable, stop and report the dependency.
    Workers commit only on a short-lived feature branch or worktree, never on the
    default or a detached branch. For each affected repository on its default
@@ -49,11 +58,11 @@ files changed.
    `chore/update-packages`) and create it from the default branch only after the
    user approves; otherwise exclude that repository. Never switch a repository
    that has uncommitted changes without the user's decision.
-7. Show `git status --porcelain` for affected repositories. The workflow records
+8. Show `git status --porcelain` for affected repositories. The workflow records
    dirty files at start as user work that workers must not revert or commit; ask
    whether that is acceptable or whether the user wants to commit them first.
-8. Present goal, acceptance, mode, paths, ledger, batch size and ceiling for
-   explicit launch approval using `ask_user`. Explain that each verified round
+9. Present goal, acceptance, mode, paths, ledger, batch size, models and ceiling
+   for explicit launch approval using `ask_user`. Explain that each verified round
    with changed files gets atomic local commits, one per logical change, on the
    feature branch; no pushes, merges or
    deployments are authorized. If approval cannot be obtained interactively, stop.
@@ -75,8 +84,9 @@ After approval, run the `exhaustive-task` dynamic workflow with:
 ```
 
 The numbers are illustrative. Use the user's answers; omit `maxRounds` for no
-ceiling. If dynamic workflows are unavailable, report the limitation; do not
-silently substitute a single agent. Leave model selection to runtime preferences.
+ceiling and omit `model`/`verifyModel` to use runtime preferences. If dynamic
+workflows are unavailable, report the limitation; do not silently substitute a
+single agent.
 
 Inspect the runtime envelope and result before acting:
 
@@ -95,9 +105,11 @@ Inspect the runtime envelope and result before acting:
 - **Runtime error, limit or interruption:** inspect run state and partial edits
   before resuming. Obtain approval before raising a reached resource limit; raise
   only that limit. Never blindly retry or discard partial work.
-- **Complete:** summarize findings, changes, commits and the ledger location.
+- **Complete:** summarize findings, changes, commits, `rejected` findings and the
+  ledger location. If the ledger lives in a repository and final verification
+  rejected findings, the rewritten ledger is uncommitted; offer to commit it.
   Say that completion means agents stopped finding new results after varied
-  searches, not proven completeness.
+  searches and a final check, not proven completeness.
 
 ## Recovery boundaries
 

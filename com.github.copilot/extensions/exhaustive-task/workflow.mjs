@@ -151,6 +151,9 @@ async function prepare(args) {
     const batchSize = positive(args, "batchSize", defaultBatch[args.mode]);
     const quietRounds = positive(args, "quietRounds", 2);
     const maxRounds = positive(args, "maxRounds");
+    for (const key of ["model", "verifyModel"]) {
+        if (args[key] !== undefined && !nonempty(args[key])) throw new Error(`${key} must be a non-empty string when supplied.`);
+    }
     if (!nonempty(args.ledgerPath) || !isAbsolute(args.ledgerPath)) {
         throw new Error("ledgerPath must be an absolute file path.");
     }
@@ -254,6 +257,11 @@ function render(state, total) {
         }
         lines.push("");
     }
+    if (state.rejected?.length) {
+        lines.push("## Rejected by final verification", "");
+        for (const id of state.rejected) lines.push(`- \`${id}\``);
+        lines.push("");
+    }
     if (state.processed.length) {
         lines.push(`## Processed units (${state.processed.length}/${total})`, "");
         for (const unit of state.processed) lines.push(`- ${unit}`);
@@ -295,7 +303,8 @@ Undo only your own uncommitted edits, preferring a reverse patch over whole-file
 Do not change remote systems. Do not install tools or dependencies unless the goal requires it.
 Stop as blocked for ambiguous requirements, unavailable required checks or new high-risk decisions.
 Finding IDs are stable semantic kebab-case IDs. When something already exists in ledger.findings,
-reuse its ID (adding locations) instead of creating a duplicate.
+reuse its ID (adding locations) instead of creating a duplicate. Never re-add IDs in rejectedFindings:
+verification found them inaccurate.
 `;
 
 const unitInstruction = "Process every unit in batch completely against the goal and acceptance: read each " +
@@ -305,22 +314,29 @@ const unitInstruction = "Process every unit in batch completely against the goal
     "comparison). Be idempotent: an interrupted attempt may already have applied edits. processed must list " +
     "exactly the batch units you fully inspected. changes lists concrete edits as 'path: what changed', or [] " +
     "if none were needed. strategy is \"\". Address repair instructions from verification when supplied.";
-const reviewInstruction = "Review round: search all repos/paths for what the ledger still lacks, meaning " +
+const reviewInstruction = "Review round. The ledger lists what earlier rounds found; assume it is incomplete. " +
+    "Did they find everything? Search all repos/paths again for what the ledger still lacks, meaning " +
     "unrecorded findings or places still needing the change, including sources named in the goal. Use a " +
     "strategy different from previousStrategies, for example other search terms, entry points, configuration, " +
-    "pipelines, dependency manifests, tests or runtime wiring. Handle at most batchSize new findings or changes; " +
-    "if you see more, take the most important and mention the rest in summary, since another round follows. " +
-    "strategy describes what you searched. processed must be []. Return empty findings and changes only after " +
-    "a genuine search, with evidence listing the searches and results. Run relevant checks for any changes. " +
-    "Address repair instructions from verification when supplied.";
-const verifyInstruction = "Read-only independent verification; run only non-mutating checks. Do not trust " +
-    "the worker summary. Check each finding is real, relevant to the goal and not a duplicate of a different " +
-    "ledger entry; list inaccurate finding IDs in rejected. For unit rounds, spot-check that every batch unit " +
-    "was inspected and that no relevant finding or required change in those units was missed. Check changes " +
-    "against the acceptance criteria and run relevant checks when code changed. For empty review results, " +
-    "check that the described search was credible. Return complete true only with passing checks and nothing " +
-    "missing (rejected findings alone do not make it incomplete); remaining is then \"\". Otherwise return " +
-    "complete false and precise, actionable remaining repair instructions.";
+    "pipelines, dependency manifests, tests or runtime wiring. Record every new finding you can evidence; " +
+    "there is no limit. Make at most batchSize changes; if more are needed, mention them in summary, since " +
+    "another round follows. strategy describes what you searched. processed must be []. Return empty findings " +
+    "and changes only after a genuine search, with evidence listing the searches and results. Run relevant " +
+    "checks for any changes. When repair is supplied, address it first: it comes from verification.";
+const verifyInstruction = "Read-only independent verification of a round that changed files; run only " +
+    "non-mutating checks. Do not trust the worker summary. Check each finding is real, relevant to the goal " +
+    "and not a duplicate of a different ledger entry; list inaccurate finding IDs in rejected. Check the " +
+    "changes against the acceptance criteria and run relevant checks (builds, tests, linters). Return complete " +
+    "true only with passing checks and nothing missing (rejected findings alone do not make it incomplete); " +
+    "remaining is then \"\". Otherwise return complete false and precise, actionable remaining repair instructions.";
+const finalInstruction = "Read-only final verification of the whole ledger before the workflow reports " +
+    "completion; run only non-mutating checks. Do not trust earlier agents. Check every ledger finding is " +
+    "real, relevant to the goal and not a duplicate of another entry; list inaccurate finding IDs in rejected. " +
+    "Then run your own independent searches across all repos/paths, using strategies not in previousStrategies, " +
+    "to spot anything still missing against the goal and acceptance. Do not redo the whole task. Return " +
+    "complete true only with passing checks and nothing missing (rejected findings alone do not make it " +
+    "incomplete); remaining is then \"\". Otherwise return complete false and remaining naming concretely " +
+    "what is missing and where to look; another review round follows.";
 const commitInstruction = "Load agent-skills:git-workflow-and-versioning; return blocked if unavailable. " +
     "Save this independently verified round as atomic commits in each repository in changedRepos: one " +
     "commit per logical change, keeping concerns separate (for example dependency updates, behavior " +
@@ -337,22 +353,24 @@ const commitInstruction = "Load agent-skills:git-workflow-and-versioning; return
 export const exhaustiveTask = {
     meta: {
         name: "exhaustive-task",
-        description: "Grind through a large task in small verified batches until nothing new is found. " +
-            "mode files: batches of files in the current repository; repos: batches of Git repositories " +
-            "under paths; search: no fixed units. After the units, review rounds with varying strategies " +
-            "continue until quietRounds consecutive rounds find nothing new. Each round: Work, independent " +
-            "Verify, Commit when files changed. Findings accumulate in a workflow-owned Markdown ledger; " +
-            "rerunning with the same ledgerPath continues after processed units. Use the exhaustive-task " +
-            "skill for preparation and approvals. args: { goal: string, acceptance: string, " +
-            "mode: \"files\"|\"repos\"|\"search\", paths?: string[], ledgerPath: string, batchSize?: number, " +
-            "quietRounds?: number, maxRounds?: number }. Requires agent-skills:git-workflow-and-versioning.",
+        description: "Grind through a large task in small rounds until nothing new is found, like repeatedly " +
+            "asking an agent 'did you find everything?'. mode files: batches of files in the current repository; " +
+            "repos: batches of Git repositories under paths; search: no fixed units. After the units, review " +
+            "rounds with varying strategies continue until quietRounds consecutive rounds find nothing new; " +
+            "a final read-only verification then checks the ledger and can reopen the search. Rounds that " +
+            "change files are verified and committed. Findings accumulate in a workflow-owned Markdown ledger; " +
+            "rerunning with the same ledgerPath continues after processed units. model sets the worker and " +
+            "commit model, verifyModel the verification model. Use the exhaustive-task skill for preparation " +
+            "and approvals. args: { goal: string, acceptance: string, mode: \"files\"|\"repos\"|\"search\", " +
+            "paths?: string[], ledgerPath: string, batchSize?: number, quietRounds?: number, maxRounds?: number, " +
+            "model?: string, verifyModel?: string }. Requires agent-skills:git-workflow-and-versioning.",
         phases: ["Work", "Verify", "Commit"].map((title) => ({ title })),
         argsSchema: {
             type: "object", required: ["goal", "acceptance", "mode", "ledgerPath"],
             properties: {
                 goal: text, acceptance: text, mode: { type: "string", enum: modes }, paths: strings,
                 ledgerPath: text, batchSize: { type: "integer" }, quietRounds: { type: "integer" },
-                maxRounds: { type: "integer" },
+                maxRounds: { type: "integer" }, model: text, verifyModel: text,
             },
         },
     },
@@ -396,20 +414,62 @@ export const exhaustiveTask = {
                 report,
             };
         };
-        const call = (label, instruction, context, schema) => ctx.agent(
+        const call = (label, instruction, context, schema, model) => ctx.agent(
             `${label}\n${boundaries}\nAssignment:\n${instruction}\nContext (JSON):\n` + JSON.stringify({
                 goal: ctx.args.goal, acceptance: ctx.args.acceptance, mode: ctx.args.mode,
                 repos: plan.repos, paths: ctx.args.paths ?? [], ledgerPath: config.ledgerPath,
                 batchSize: config.batchSize, preExisting: plan.preExisting, ...context,
             }),
-            { label, schema },
+            { label, schema, ...(model ? { model } : {}) },
         );
+        const workModel = ctx.args.model;
+        const verifyModel = ctx.args.verifyModel ?? ctx.args.model;
+        const strategies = () => [...new Set([...state.reviews.map((review) => review.strategy),
+            ...reviews.map((review) => review.strategy)])];
+        const brief = () => state.findings.map(({ id, title, locations }) => ({ id, title, locations }));
+        let repair = null;
+        let finals = 0;
+        state.rejected ??= [];
+        const rejected = state.rejected;
         await write(state);
 
         while (true) {
             if (cursor >= todo.length && quiet >= config.quietRounds) {
-                ctx.log(`Complete after ${round} rounds: ${state.findings.length} findings.`);
-                return { status: "complete", ...progress(), findings: state.findings, commits, reviews };
+                ctx.phase("Verify");
+                const final = await ctx.step(`final-v1:${round}`, async () => {
+                    const current = await snapshot(plan.repos);
+                    const verification = await call(`Final:${round}:${current.fingerprint}`, finalInstruction,
+                        { round, ledger: { findings: brief(), processedCount: state.processed.length },
+                            previousStrategies: strategies() }, verifySchema, verifyModel);
+                    const ids = state.findings.map((finding) => finding.id);
+                    if (!evidenced(verification) || typeof verification.complete !== "boolean" ||
+                        !list(verification.rejected) || !verification.rejected.every((id) => ids.includes(id)) ||
+                        (verification.complete ? !passing(verification) || verification.remaining !== "" :
+                            !nonempty(verification.remaining))) {
+                        return { blocked: "Final verification is blocked, unevidenced or inconsistent.", verification };
+                    }
+                    if ((await snapshot(plan.repos)).fingerprint !== current.fingerprint) {
+                        return { blocked: "Files changed during read-only final verification.", verification };
+                    }
+                    return { verification };
+                });
+                if (final.blocked) return stop("Verify", final.blocked, final.verification);
+                const { verification } = final;
+                if (verification.rejected.length) {
+                    rejected.push(...verification.rejected);
+                    state.findings = state.findings.filter((finding) => !verification.rejected.includes(finding.id));
+                    await write(state);
+                }
+                if (verification.complete) {
+                    ctx.log(`Complete after ${round} rounds: ${state.findings.length} findings.`);
+                    return { status: "complete", ...progress(), findings: state.findings, commits, reviews, rejected };
+                }
+                if (++finals >= maxAttempts) {
+                    return stop("Verify", `Final verification still incomplete after ${maxAttempts} attempts.`, verification);
+                }
+                ctx.log(`Final verification reopened the search: ${verification.remaining}`);
+                repair = verification.remaining;
+                quiet = 0;
             }
             let checkpoint = null;
             if (round > 0 && config.maxRounds !== undefined && round % config.maxRounds === 0) {
@@ -431,26 +491,29 @@ export const exhaustiveTask = {
                 }
                 const context = {
                     round, batch: batch ?? [], root: config.root ?? null,
-                    ledger: { findings: state.findings.map(({ id, title, locations }) => ({ id, title, locations })),
-                        processedCount: state.processed.length },
-                    previousStrategies: [...new Set([...state.reviews.map((review) => review.strategy),
-                        ...reviews.map((review) => review.strategy)])],
+                    ledger: { findings: brief(), processedCount: state.processed.length },
+                    previousStrategies: strategies(), rejectedFindings: rejected,
                 };
                 let work = null;
                 let verification = null;
                 for (let attempt = 1; ; attempt++) {
                     ctx.phase("Work");
                     work = await call(`Work:${round}:${attempt}`, batch ? unitInstruction : reviewInstruction,
-                        { ...context, repair: verification?.remaining ?? null, previousAttempt: work }, workSchema);
+                        { ...context, repair: verification?.remaining ?? (batch ? null : repair), previousAttempt: work },
+                        workSchema, workModel);
                     if (!evidenced(work) || !validFindings(work.findings) || !list(work.changes) ||
                         !sameSet(work.processed ?? [], batch ?? []) || (!batch && !nonempty(work.strategy))) {
                         return blocked("Work", batch ? "Work report is blocked, unevidenced or does not cover " +
                             "exactly the batch." : "Review report is blocked, unevidenced or lacks a strategy.", work);
                     }
-                    ctx.phase("Verify");
                     const current = await snapshot(plan.repos);
+                    if (current.fingerprint === before.fingerprint) {
+                        verification = null;
+                        break;
+                    }
+                    ctx.phase("Verify");
                     verification = await call(`Verify:${round}:${attempt}:${current.fingerprint}`, verifyInstruction,
-                        { ...context, work }, verifySchema);
+                        { ...context, work }, verifySchema, verifyModel);
                     const ids = work.findings.map((finding) => finding.id);
                     if (!evidenced(verification) || typeof verification.complete !== "boolean" ||
                         !list(verification.rejected) || !verification.rejected.every((id) => ids.includes(id)) ||
@@ -468,7 +531,8 @@ export const exhaustiveTask = {
                 }
                 const outcome = {
                     round, batch, strategy: work.strategy, changes: work.changes, summary: work.summary,
-                    findings: work.findings.filter((finding) => !verification.rejected.includes(finding.id)),
+                    findings: work.findings.filter((finding) => !verification?.rejected.includes(finding.id) &&
+                        !rejected.includes(finding.id)),
                     commits: [],
                 };
                 await write(apply(structuredClone(state), outcome, ctx.runId).state);
@@ -477,7 +541,7 @@ export const exhaustiveTask = {
                 if (changedRepos.length) {
                     ctx.phase("Commit");
                     const commit = await call(`Commit:${round}:${staged.fingerprint}`, commitInstruction,
-                        { ...context, changedRepos, work, verification }, commitSchema);
+                        { ...context, changedRepos, work, verification }, commitSchema, workModel);
                     const named = (entry) => repoKeys.get(pathKey(entry.repo));
                     const valid = evidenced(commit) && Array.isArray(commit.commits) && Array.isArray(commit.uncommitted) &&
                         commit.commits.every((entry) => named(entry) && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(entry.commit)) &&
@@ -498,6 +562,7 @@ export const exhaustiveTask = {
             else {
                 reviews.push({ round, strategy: result.strategy, newFindings, changes: result.changes.length });
                 quiet = newFindings.length || result.changes.length ? 0 : quiet + 1;
+                repair = null;
             }
             lastFingerprint = result.after;
             await write(state);

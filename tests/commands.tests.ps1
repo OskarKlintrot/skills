@@ -137,12 +137,13 @@ Assert-Check 'Lifecycle requires approved atomic commits with an explicit baseli
 )
 
 $exhaustive = Get-Content -LiteralPath (Join-Path $root 'skills' 'exhaustive-task' 'SKILL.md') -Raw
-Assert-Check 'Exhaustive task skill starts its workflow after mode, ledger, batch size, round ceiling and launch approval' (
+Assert-Check 'Exhaustive task skill starts its workflow after mode, ledger, batch size, models, round ceiling and launch approval' (
     $exhaustive -match '\A---\r?\nname: exhaustive-task\r?\ndescription: [^\r\n]+' -and
     $exhaustive.Contains('run the `exhaustive-task` dynamic workflow') -and
     $exhaustive.Contains('Choose the mode') -and
     $exhaustive.Contains('`ledgerPath`') -and
     $exhaustive.Contains('about the batch size') -and
+    $exhaustive.Contains('which models to use') -and
     $exhaustive.Contains('whether to use a round ceiling') -and
     $exhaustive.Contains('Never invent a default.') -and
     $exhaustive.Contains('explicit launch') -and

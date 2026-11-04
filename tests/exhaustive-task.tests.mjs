@@ -65,7 +65,7 @@ function harness(args, handler) {
             const key = JSON.stringify({ prompt, options });
             if (journal.has(key)) return journal.get(key);
             const [role, round, attempt] = options.label.split(":");
-            const call = { role, round: Number(round), attempt: Number(attempt), context: JSON.parse(prompt.split("Context (JSON):\n")[1]) };
+            const call = { role, round: Number(round), attempt: Number(attempt), model: options.model, context: JSON.parse(prompt.split("Context (JSON):\n")[1]) };
             calls.push(call);
             const output = await handler(call);
             assert.ok(output, `Unexpected agent: ${options.label}`);
@@ -82,7 +82,7 @@ const defaultHandler = (overrides = {}) => async (call) => {
         if (output) return output;
     }
     if (call.role === "Work") return work(call.context.batch, [], [], call.context.batch.length ? "" : `strategy ${call.round}`);
-    if (call.role === "Verify") return verified();
+    if (call.role === "Verify" || call.role === "Final") return verified();
     return undefined;
 };
 
@@ -100,7 +100,7 @@ async function filesFixture(t, count = 7, extra = {}) {
     };
 }
 
-test("registered workflow declares its contract without model or resource overrides", () => {
+test("registered workflow declares its contract without resource limits", () => {
     assert.equal(exhaustiveTask.meta.name, "exhaustive-task");
     assert.deepEqual(exhaustiveTask.meta.argsSchema.required, ["goal", "acceptance", "mode", "ledgerPath"]);
     assert.equal(exhaustiveTask.meta.limits, undefined);
@@ -111,7 +111,7 @@ test("invalid arguments fail before agents are spawned", async (t) => {
     const invalid = [
         { mode: "everything" }, { batchSize: 0 }, { quietRounds: -1 }, { maxRounds: 1.5 },
         { ledgerPath: "ledger.md" }, { paths: [] }, { paths: ["../outside"] }, { paths: [".git"] },
-        { paths: ["nothing-here"] }, { mode: "repos", paths: ["relative"] },
+        { paths: ["nothing-here"] }, { mode: "repos", paths: ["relative"] }, { model: "" }, { verifyModel: 3 },
     ];
     for (const override of invalid) {
         const h = harness({ ...f.args, ...override }, defaultHandler());
@@ -136,7 +136,8 @@ test("files mode covers every scoped file in batches, then reviews until quiet",
     assert.equal(result.status, "complete");
     const batches = h.calls.filter((call) => call.role === "Work" && call.context.batch.length).map((call) => call.context.batch);
     assert.deepEqual(batches, [["src/a.txt", "src/b.txt", "src/c.txt"], ["src/d.txt", "src/e.txt", "src/f.txt"], ["src/g.txt"]]);
-    assert.equal(h.calls.filter((call) => call.role === "Verify").length, 6);
+    assert.equal(h.calls.filter((call) => call.role === "Verify").length, 0);
+    assert.equal(h.calls.filter((call) => call.role === "Final").length, 1);
     assert.equal(h.calls.some((call) => call.role === "Commit"), false);
     assert.deepEqual(result.findings.map((entry) => [entry.id, entry.locations]), [
         ["ado-rest-client", ["src/b.txt", "src/e.txt"]], ["ado-pipeline", ["azure-pipelines.yml:1"]],
@@ -151,13 +152,52 @@ test("files mode covers every scoped file in batches, then reviews until quiet",
     assert.doesNotMatch(ledger, /strategy 5/);
 });
 
-test("rejected findings stay out of the ledger and incomplete rounds are repaired", async (t) => {
+test("final verification rejects findings, reopens the search and passes models through", async (t) => {
+    const root = await temp(t);
+    const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
+    const h = harness({
+        goal: "Find every ADO integration", acceptance: "All listed", mode: "search", paths: [path],
+        ledgerPath: join(root, "ledger.md"), quietRounds: 1, model: "cheap", verifyModel: "strong",
+    }, defaultHandler({
+        Work: ({ round, context }) => {
+            if (round === 1) return work([], [finding("real-hit", "app.ts:1"), finding("fake-hit", "app.ts:2")], [], "grep");
+            if (round === 3) {
+                assert.equal(context.repair, "Check service hooks");
+                assert.deepEqual(context.rejectedFindings, ["fake-hit"]);
+                return work([], [finding("service-hook", "app.ts:3"), finding("fake-hit", "app.ts:2")], [], "hooks");
+            }
+            assert.equal(context.repair, null);
+            return undefined;
+        },
+        Final: ({ round }) => round === 2
+            ? report({ complete: false, remaining: "Check service hooks", rejected: ["fake-hit"] }) : undefined,
+    }));
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.deepEqual(result.findings.map((entry) => entry.id), ["real-hit", "service-hook"]);
+    assert.deepEqual(result.rejected, ["fake-hit"]);
+    assert.deepEqual(h.calls.filter((call) => call.role === "Final").map((call) => call.round), [2, 4]);
+    assert.ok(h.calls.every((call) => call.model === (call.role === "Final" ? "strong" : "cheap")));
+    const ledger = await readFile(join(root, "ledger.md"), "utf8");
+    assert.match(ledger, /Rejected by final verification/);
+    assert.doesNotMatch(ledger, /### Title fake-hit/);
+});
+
+test("rounds that change files are verified and repaired; rejected findings stay out", async (t) => {
     const f = await filesFixture(t, 2, { batchSize: 2, quietRounds: 1 });
     const h = harness(f.args, defaultHandler({
-        Work: ({ context, round }) => round === 1 ? work(context.batch, [finding("real-hit", "src/a.txt"), finding("fake-hit", "src/b.txt")]) : undefined,
+        Work: async ({ context, round, attempt }) => {
+            if (round !== 1) return undefined;
+            await writeFile(join(f.path, "src", "a.txt"), `cleaned ${attempt}\n`);
+            return work(context.batch, [finding("real-hit", "src/a.txt"), finding("fake-hit", "src/b.txt")], ["src/a.txt: cleaned"]);
+        },
         Verify: ({ round, attempt }) => round === 1 ? (attempt === 1
             ? report({ complete: false, remaining: "Inspect src/b.txt again", rejected: [] })
             : verified({ rejected: ["fake-hit"] })) : undefined,
+        Commit: () => {
+            git(f.path, "commit", "-qam", "refactor: clean batch");
+            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
+        },
     }));
     const result = await h.run();
     assert.equal(result.status, "complete");
@@ -174,6 +214,10 @@ test("rounds block on uncovered batches, persistent verification failures and ve
     assert.equal(partial.phase, "Work");
 
     const failing = harness(f.args, defaultHandler({
+        Work: async ({ context }) => {
+            await writeFile(join(f.path, "src", "a.txt"), "failing change\n");
+            return work(context.batch, [], ["src/a.txt: changed"]);
+        },
         Verify: () => report({ complete: false, remaining: "Still missing", rejected: [] }),
     }));
     const stuck = await failing.run();
@@ -181,6 +225,10 @@ test("rounds block on uncovered batches, persistent verification failures and ve
     assert.equal(failing.calls.filter((call) => call.role === "Work").length, 3);
 
     const mutating = await harness(f.args, defaultHandler({
+        Work: async ({ context }) => {
+            await writeFile(join(f.path, "src", "b.txt"), "mutating work\n");
+            return work(context.batch, [], ["src/b.txt: changed"]);
+        },
         Verify: async () => {
             await writeFile(join(f.path, "src", "a.txt"), "changed by verifier\n");
             return verified();
