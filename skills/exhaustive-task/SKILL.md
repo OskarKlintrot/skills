@@ -43,14 +43,19 @@ files changed.
    Set credit/time/agent limits only when the user specifies them.
 6. Load the installed `agent-skills:git-workflow-and-versioning` skill and follow
    repository Git conventions. If unavailable, stop and report the dependency.
-   Confirm each affected repository is on a non-default feature branch or worktree
-   the user accepts for commits. Do not switch branches yourself.
+   Workers commit only on a short-lived feature branch or worktree, never on the
+   default or a detached branch. For each affected repository on its default
+   branch, propose a feature branch named by repository convention (for example
+   `chore/update-packages`) and create it from the default branch only after the
+   user approves; otherwise exclude that repository. Never switch a repository
+   that has uncommitted changes without the user's decision.
 7. Show `git status --porcelain` for affected repositories. The workflow records
    dirty files at start as user work that workers must not revert or commit; ask
    whether that is acceptable or whether the user wants to commit them first.
 8. Present goal, acceptance, mode, paths, ledger, batch size and ceiling for
-   explicit launch approval using `ask_user`. Explain that each round with changed
-   files gets local commits on the current branch; no pushes, merges or
+   explicit launch approval using `ask_user`. Explain that each verified round
+   with changed files gets atomic local commits, one per logical change, on the
+   feature branch; no pushes, merges or
    deployments are authorized. If approval cannot be obtained interactively, stop.
 
 ## Launch and coordinate
@@ -80,7 +85,11 @@ Inspect the runtime envelope and result before acting:
   next batch of rounds or stop. Only explicit approval authorizes resuming that
   exact run. Never auto-resume. Edits while paused block the resumed round.
 - **Completed with `status: "blocked"`:** not complete. Inspect `reason`,
-  `remainingUnits`, `report` and `needsInput`. Ask needed decisions one at a time.
+  `remainingUnits`, `report` and `needsInput`. A blocked round leaves its
+  edits uncommitted; do not let them pile up. Show `git status` and the diff
+  since the last save point, then ask whether to keep them for the next run or
+  undo the workflow's own uncommitted edits with a reverse patch, preserving
+  pre-existing user work. Ask needed decisions one at a time.
   After resolving the cause, renew approval if scope or risk changed and start a
   new run with the same `ledgerPath`; it continues after the processed units.
 - **Runtime error, limit or interruption:** inspect run state and partial edits

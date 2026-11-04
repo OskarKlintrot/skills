@@ -322,11 +322,15 @@ const verifyInstruction = "Read-only independent verification; run only non-muta
     "missing (rejected findings alone do not make it incomplete); remaining is then \"\". Otherwise return " +
     "complete false and precise, actionable remaining repair instructions.";
 const commitInstruction = "Load agent-skills:git-workflow-and-versioning; return blocked if unavailable. " +
-    "Create one atomic save point per repository in changedRepos for this independently verified round. " +
-    "Inspect git status, git diff and git diff --cached in each. Stage only this round's changes and the " +
-    "ledger file if it lives in that repository; never git add -A and never stage preExisting files: list " +
-    "changes to them in uncommitted with a reason. Inspect the staged diff for scope and secrets. Follow " +
-    "repository message conventions and attribution trailers. Verify the full commit ID with git. Reuse an " +
+    "Save this independently verified round as atomic commits in each repository in changedRepos: one " +
+    "commit per logical change, keeping concerns separate (for example dependency updates, behavior " +
+    "changes, refactoring and formatting in separate commits). Include the ledger file, if it lives in " +
+    "that repository, with the commit it documents, or as its own docs commit when the round only recorded " +
+    "findings. Inspect git status, git diff and git diff --cached in each. Stage only this round's changes; " +
+    "never git add -A and never stage preExisting files: list changes to them in uncommitted with a reason. " +
+    "Inspect each staged diff for scope and secrets. Follow repository message conventions and attribution " +
+    "trailers; otherwise use '<type>: <description>' with a body explaining why. Never commit on a default " +
+    "or detached branch; return blocked instead. Verify each full commit ID with git. Reuse an " +
     "existing matching commit after an interruption instead of duplicating it. Never make empty commits. " +
     "Every repo in changedRepos must appear in commits or uncommitted. Do not edit files.";
 

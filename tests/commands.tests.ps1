@@ -154,6 +154,9 @@ Assert-Check 'Exhaustive task coordinator protects user work and routes human de
     $exhaustive.Contains('`needsInput`') -and
     $exhaustive.Contains('same `ledgerPath`') -and
     $exhaustive.Contains('reverse patch') -and
+    $exhaustive.Contains('one per logical change') -and
+    $exhaustive.Contains('never on the') -and
+    $exhaustive.Contains('do not let them pile up') -and
     $exhaustive.Contains('default branch')
 )
 
