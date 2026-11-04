@@ -441,40 +441,44 @@ export const lifecycle = {
                 questions: [`${initialSafety} Restore affected paths outside the spec before continuing.`] };
             return stop("Define", initialSafety);
         }
+        for (let generation = 0; generation < generations.specGeneration; generation++) {
+            const key = generation ? String(generation) : "";
+            const headChanged = await ctx.step(`define-head-observation-v1:${key}`, () => false);
+            const protectedChanges = await ctx.step(`define-protected-state:${key}`, () => []);
+            const paths = await ctx.step(`define-path-observation-v3:${key}`, () => null);
+            if (headChanged || protectedChanges.length || paths?.error) {
+                return stop("Define", "A prior Define attempt violated worktree safety; inspect and restore the worktree before starting a clean run.");
+            }
+        }
         const missingInitialSpec = await ctx.step(`initial-spec-validity-v1:${specRevision}`, async () =>
             !evidenced(initialSpec) || !nonempty(initialSpec.specPath) ||
             Boolean((await loadSpec(initialSpec.specPath)).error));
         const selectedSpec = specRevision && missingInitialSpec ?
             await agent("Define", defineInstruction, { goal: ctx.args.goal, clarifying: true },
                 schema({ specPath: text })) : initialSpec;
-        if (!evidenced(selectedSpec)) {
-            reports.Define = selectedSpec;
-            return stop("Define", "Requirements unclear, spec missing, or Define blocked.");
-        }
-        if (!nonempty(selectedSpec.specPath)) return stop("Define", "Define did not return a specPath.");
-        const selectedSource = await loadSpec(selectedSpec.specPath);
-        if (selectedSource.error) return stop("Define", selectedSource.error);
-        const origin = await ctx.step("spec-origin-v1", async () => {
-            const source = selectedSource;
-            const sourceKey = source.path.replaceAll("\\", "/");
-            const tracked = baseline.trackedPaths.includes(sourceKey);
-            const revisionTarget = tracked ?
-                `tasks/lifecycle-spec-${fingerprint(ctx.runId).slice(0, 12)}.md` : source.path;
-            const occupied = [...baseline.trackedPaths, ...baseline.untrackedPaths]
-                .some((path) => path.replaceAll("\\", "/") === revisionTarget.replaceAll("\\", "/"));
-            return { sourcePath: source.path, revisionTarget, occupied: tracked && occupied };
-        });
+        const selectedSource = nonempty(selectedSpec?.specPath) ? await loadSpec(selectedSpec.specPath) :
+            { error: "Define did not return a specPath." };
+        const origin = evidenced(selectedSpec) && !selectedSource.error ?
+            await ctx.step("spec-origin-v1", async () => {
+                const source = selectedSource;
+                const sourceKey = source.path.replaceAll("\\", "/");
+                const tracked = baseline.trackedPaths.includes(sourceKey);
+                const revisionTarget = tracked ?
+                    `tasks/lifecycle-spec-${fingerprint(ctx.runId).slice(0, 12)}.md` : source.path;
+                const occupied = [...baseline.trackedPaths, ...baseline.untrackedPaths]
+                    .some((path) => path.replaceAll("\\", "/") === revisionTarget.replaceAll("\\", "/"));
+                return { sourcePath: source.path, revisionTarget, occupied: tracked && occupied };
+            }) : null;
         if (specRevision && origin?.occupied) {
             return stop("Define", "The workflow-owned spec revision path overlaps pre-existing work.");
         }
-        const spec = specRevision && !missingInitialSpec ? await agent("Define", defineInstruction +
+        const spec = specRevision && !missingInitialSpec && origin ? await agent("Define", defineInstruction +
             " Use sourcePath as read-only reference. Write the revised specification only to " +
             "revisionTarget; this is the pinned workflow-owned revision path. If it differs from " +
             "sourcePath, create a complete revised copy and preserve the original source.",
         { goal: ctx.args.goal, sourcePath: origin.sourcePath, revisionTarget: origin.revisionTarget },
         schema({ specPath: text })) : selectedSpec;
         reports.Define = spec;
-        if (!evidenced(spec)) return stop("Define", "Requirements unclear, spec missing, or Define blocked.");
         const headChanged = await ctx.step(`define-head-observation-v1:${specRevision}`,
             () => currentHead(baseline.root) !== beforeDefine.head);
         if (headChanged) {
@@ -483,13 +487,14 @@ export const lifecycle = {
         const protectedChanges = await ctx.step(`define-protected-state:${specRevision}`,
             () => changedProtectedPaths(baseline));
         if (protectedChanges.length) {
-            spec.questions = [`Define changed pre-existing work: ${protectedChanges.join(", ")}. Restore it before continuing.`];
+            reports.Define = { ...spec,
+                questions: [`Define changed pre-existing work: ${protectedChanges.join(", ")}. Restore it before continuing.`] };
             return stop("Define", "Define changed pre-existing work.");
         }
-        if (!nonempty(spec.specPath)) return stop("Define", "Define did not return a specPath.");
-        const currentSpec = await loadSpec(spec.specPath);
-        if (currentSpec.error) return stop("Define", currentSpec.error);
-        const specPathKey = currentSpec.path.replaceAll("\\", "/");
+        const currentSpec = nonempty(spec?.specPath) ? await loadSpec(spec.specPath) :
+            { error: "Define did not return a specPath." };
+        const specPathKey = evidenced(spec) && !currentSpec.error ?
+            currentSpec.path.replaceAll("\\", "/") : "";
         const dirtyBaselinePaths = new Set([
             ...baseline.stagedPaths, ...baseline.unstagedPaths, ...baseline.untrackedPaths,
         ].map((path) => path.replaceAll("\\", "/")));
@@ -543,9 +548,11 @@ export const lifecycle = {
             return stop("Define", "Spec path changed since this run started.");
         }
         if (definePaths.error) {
-            spec.questions = [definePaths.question];
+            reports.Define = { ...spec, questions: [definePaths.question] };
             return stop("Define", definePaths.error);
         }
+        if (!evidenced(spec)) return stop("Define", "Requirements unclear, spec missing, or Define blocked.");
+        if (currentSpec.error) return stop("Define", currentSpec.error);
         const ownedSpec = specRevision && origin ? origin.revisionTarget.replaceAll("\\", "/") :
             origin?.sourcePath.replaceAll("\\", "/");
         if (ownedSpec !== specPathKey) {

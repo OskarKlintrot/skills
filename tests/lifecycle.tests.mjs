@@ -332,6 +332,33 @@ test("a blocked initial Define cannot hide unauthorized edits behind later feedb
     });
 });
 
+test("a blocked spec revision cannot carry unauthorized edits into another generation", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
+            if (options.label === "Define" && context.revisions.define === "Blocked revision") {
+                await writeFile("unauthorized.txt", "Out-of-scope revision content");
+                return { ...result, status: "blocked", questions: ["Which scope?"] };
+            }
+            return result;
+        };
+        await approveSpec(h);
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        await mkdir("tasks");
+        await writeFile(context.revisionRequestPath, JSON.stringify({ define: "Blocked revision" }));
+        const blocked = await lifecycle.run(h.ctx);
+        assert.match(blocked.reason, /outside its assigned spec/);
+        await writeFile(context.revisionRequestPath, JSON.stringify({ define: "Another revision" }));
+        const retried = await lifecycle.run(h.ctx);
+        assert.equal(retried.verdict, "NO-GO");
+        assert.match(retried.reason, /prior Define attempt violated/);
+        assert.equal(h.calls.filter((call) => call.label === "Define").length, 2);
+    });
+});
+
 test("Define detects ignored clean and dirty submodule overwrites with batched index reads", async (t) => {
     for (const initiallyDirty of [true, false]) {
         await inRepository(async (directory, git) => {
