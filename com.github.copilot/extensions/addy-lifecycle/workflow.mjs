@@ -419,8 +419,9 @@ export const lifecycle = {
             "preserve unrelated files and report unresolved decisions.";
         const initialSpec = await ctx.step("initial-spec-selection-v1", () => agent("Define",
             defineInstruction, { goal: ctx.args.goal }, schema({ specPath: text })));
-        const missingInitialSpec = !evidenced(initialSpec) || !nonempty(initialSpec.specPath) ||
-            Boolean((await loadSpec(initialSpec.specPath)).error);
+        const missingInitialSpec = await ctx.step(`initial-spec-validity-v1:${specRevision}`, async () =>
+            !evidenced(initialSpec) || !nonempty(initialSpec.specPath) ||
+            Boolean((await loadSpec(initialSpec.specPath)).error));
         const selectedSpec = specRevision && missingInitialSpec ?
             await agent("Define", defineInstruction, { goal: ctx.args.goal, clarifying: true },
                 schema({ specPath: text })) : initialSpec;
@@ -444,7 +445,7 @@ export const lifecycle = {
         if (specRevision && origin?.occupied) {
             return stop("Define", "The workflow-owned spec revision path overlaps pre-existing work.");
         }
-        const spec = specRevision && selectedSpec === initialSpec ? await agent("Define", defineInstruction +
+        const spec = specRevision && !missingInitialSpec ? await agent("Define", defineInstruction +
             " Use sourcePath as read-only reference. Write the revised specification only to " +
             "revisionTarget; this is the pinned workflow-owned revision path. If it differs from " +
             "sourcePath, create a complete revised copy and preserve the original source.",

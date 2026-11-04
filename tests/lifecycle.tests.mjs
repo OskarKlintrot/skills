@@ -280,14 +280,19 @@ test("clarification remains paused until feedback produces a spec in the same ru
 
 test("Define feedback recovers when its earlier reported spec was never created", async () => {
     await inRepository(async () => {
-        const h = harness({ Define: report({ specPath: "SPEC.md" }) });
+        const h = harness({
+            Define: report({ specPath: "SPEC.md" }),
+            Plan: planReport({ artifactPaths: ["plan.md"], tasks: [task("first")], completed: [] }),
+        });
         const agent = h.ctx.agent;
         h.ctx.agent = async (prompt, options) => {
             const result = await agent(prompt, options);
             const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
             if (options.label === "Define" && context.revisions.define) {
-                await writeFile("SPEC.md", "# Recovered specification");
+                await writeFile("SPEC.md", context.clarifying ?
+                    "# Recovered specification" : "# Unrequested replacement");
             }
+            if (options.label === "Plan") await writeFile("plan.md", "# Recovered plan");
             return result;
         };
         assert.equal((await lifecycle.run(h.ctx)).verdict, "NO-GO");
@@ -296,6 +301,9 @@ test("Define feedback recovers when its earlier reported spec was never created"
         await writeFile(context.revisionRequestPath, JSON.stringify({ define: "Create the missing spec" }));
         await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-spec:/);
         assert.equal(await readFile("SPEC.md", "utf8"), "# Recovered specification");
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+        assert.equal(h.calls.filter((call) => call.label === "Define").length, 2);
     });
 });
 
