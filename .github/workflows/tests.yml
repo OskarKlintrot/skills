@@ -32,8 +32,8 @@ jobs:
       - name: Run convention hook tests
         run: pwsh -NoProfile -File tests\git-conventions-hooks.tests.ps1
 
-      - name: Run lifecycle workflow tests
-        run: node --test tests\lifecycle.tests.mjs
+      - name: Run dynamic workflow tests
+        run: node --test tests\lifecycle.tests.mjs tests\exhaustive-task.tests.mjs
 
       - name: Run command packaging and runtime tests
         env:

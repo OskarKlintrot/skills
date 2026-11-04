@@ -2,7 +2,7 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, [engineering workflow commands](#engineering-workflow-commands) that use the separately installed Addy agent-skills plugin, four [specialist personas](#agents), and [dynamic workflows](#dynamic-workflows) for an engineering lifecycle and a no-agent `hello-world` example. These components are available through plugin installation without development mappings. It contains no standalone instructions or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, [engineering workflow commands](#engineering-workflow-commands) that use the separately installed Addy agent-skills plugin, four [specialist personas](#agents), and [dynamic workflows](#dynamic-workflows) for an engineering lifecycle, exhaustive scoped tasks and a no-agent `hello-world` example. These components are available through plugin installation without development mappings. It contains no standalone instructions or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
 
 ## Git conventions
 
@@ -205,6 +205,9 @@ com.github.copilot\
     addy-lifecycle\
       extension.mjs
       workflow.mjs
+    exhaustive-task\
+      extension.mjs
+      workflow.mjs
   hooks\
     hooks.json
     scripts\
@@ -253,6 +256,38 @@ copilot --experimental workflow run hello-world --args '{"name":"Oskar"}'
 ```
 
 It returns `{"greeting":"Hello, Oskar!","source":"oskar-tools plugin"}`. In an interactive session, enable experimental features and ask Copilot to run the `hello-world` dynamic workflow.
+
+#### Exhaustive scoped tasks
+
+`exhaustive-task` works through a repository task until a separate full-scope audit finds no remaining work:
+
+**Inventory -> sequential foreach (Work -> independent Verify) -> full-scope Audit -> repeat with repairs and newly discovered items -> complete.**
+
+Ask Copilot to run the `exhaustive-task` dynamic workflow, or invoke it directly from the worktree root:
+
+```powershell
+copilot --experimental workflow run exhaustive-task --args '{"goal":"Find and document every X integration","scope":["."],"acceptance":"Every integration has source references, configuration, call flow and error handling documented in docs/integrations.md, checked against the source."}'
+```
+
+Required arguments are `goal`, `scope` (repository-relative files/directories, with `["."]` for the whole repository) and concrete `acceptance` criteria. Include both input files and output destinations in scope. This workflow has no Addy skill dependency, command adapter or fixed model selection. Each discovery, work, verification and audit call uses a fresh agent context; agents share the worktree and run sequentially, not in isolated branches.
+
+The workflow enumerates tracked and non-ignored untracked files itself using Git. Discovery and every audit receive that manifest and must report coverage of every path, including inspected irrelevant files. Tasks use stable semantic IDs and may span files. Each worker handles one item; a separate read-only verifier checks actual output and passing checks, not just the worker's completion claim. Incomplete items retain repair instructions. The audit searches the entire current manifest again, can reopen verified items and adds missed work to the next round. New scoped files enter the next manifest. Even an initially empty inventory requires an independent audit.
+
+Completion requires no pending repairs or audit findings, full manifest coverage, evidenced passing goal-level checks and unchanged scoped file content since that audit. Repeated pending IDs with no scoped file changes stop as `blocked`, not `complete`. Missing/invalid reports, unanswered questions, incomplete coverage and unavailable required checks also block. The result includes `completed`, `pending` and, when blocked, `reason` and `needsInput`; the main conversation handles questions and decisions. Resolve blockers and start a new run for changed requirements. Workers cannot conduct interviews or wait for approval.
+
+Rounds are journaled for runtime resume after interruptions or resource-limit failures. Agent calls have distinct round/item labels; verifier and auditor labels also include a scoped-content fingerprint to avoid reusing stale reports during an interrupted round. Journaled completed rounds replay without repeating edits; a final workspace fingerprint rejects stale completion after external scoped changes. Side effects remain at-least-once: workers must inspect current files and be idempotent. Do not edit the workspace concurrently with a run.
+
+There is no arbitrary round cap or declared resource ceiling. Runs consume AI credits and can continue indefinitely if work keeps changing; set runtime limits when invoking the workflow if needed, and resume the same run with an explicitly raised reached limit. The no-progress gate detects unchanged content and repeated IDs, not semantic progress. Full-scope discovery can also be expensive for large repositories; choose a concrete scope that still contains all relevant sources and outputs.
+
+Coverage and check evidence remain model reports, not a proof that every integration was understood. The code checks report structure, exact manifest coverage, queue state and content fingerprints; it cannot establish semantic completeness or enforce worker permissions. Ignored files, symlinks, submodules, external repositories and remote systems are unsupported; required work there must be reported as blocked, not silently excluded. Only Work agents may edit scoped files. Agents must preserve user edits and the index and must not stage, commit, push, merge, deploy or perform external changes.
+
+Run the workflow contract tests without model requests:
+
+```powershell
+node --test tests\exhaustive-task.tests.mjs
+```
+
+These use a simulated workflow context and real temporary scoped files to exercise rediscovery, repair loops, independent verification, new-file coverage, stall detection, report gates and resume freshness. `tests\commands.tests.ps1 -Runtime` checks installed workflow registration with invalid arguments and no model requests. Neither establishes live model compliance.
 
 #### Addy lifecycle
 
