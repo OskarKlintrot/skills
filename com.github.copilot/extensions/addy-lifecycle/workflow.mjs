@@ -75,9 +75,20 @@ function currentHead(root = worktreeRoot()) {
     return head.status === 0 ? head.stdout.trim() : null;
 }
 
-async function pathState(path, root = worktreeRoot()) {
+function indexSnapshot(root) {
+    const entries = new Map();
+    for (const entry of gitPaths(["ls-files", "--stage", "-z"], root)) {
+        const path = entry.slice(entry.indexOf("\t") + 1);
+        if (!entries.has(path)) entries.set(path, []);
+        entries.get(path).push(entry);
+    }
+    return entries;
+}
+
+async function pathState(path, root = worktreeRoot(), indexEntries) {
     const absolute = resolve(root, path);
-    const index = gitPaths(["--literal-pathspecs", "ls-files", "--stage", "-z", "--", path], root);
+    const index = indexEntries ? indexEntries.get(path.replaceAll("\\", "/")) ?? [] :
+        gitPaths(["--literal-pathspecs", "ls-files", "--stage", "-z", "--", path], root);
     let worktree;
     try {
         const stat = await lstat(absolute);
@@ -93,10 +104,11 @@ async function pathState(path, root = worktreeRoot()) {
             cwd: absolute, encoding: "utf8",
         }).trimEnd();
         if (resolve(nestedRoot) === absolute) {
-            const paths = [...new Set(gitPaths(["ls-files", "--cached", "--others",
-                "--exclude-standard", "-z"], absolute))].sort();
+            const nestedIndex = indexSnapshot(absolute);
+            const paths = [...new Set([...nestedIndex.keys(),
+                ...gitPaths(["ls-files", "--others", "--exclude-standard", "-z"], absolute)])].sort();
             worktree = { ...worktree, head: currentHead(absolute),
-                files: await Promise.all(paths.map((entry) => pathState(entry, absolute))) };
+                files: await Promise.all(paths.map((entry) => pathState(entry, absolute, nestedIndex))) };
         }
     }
     return { path, worktree, index };

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { randomUUID } from "node:crypto";
 import { join, relative, resolve } from "node:path";
 import { afterEach, test } from "node:test";
@@ -276,14 +278,17 @@ test("clarification remains paused until feedback produces a spec in the same ru
     });
 });
 
-test("Define detects overwrites inside a pre-existing dirty submodule", async () => {
+test("Define detects dirty submodule overwrites with batched index reads", async (t) => {
     await inRepository(async (directory, git) => {
         const source = join(directory, "module-source");
         await mkdir(source);
         const nestedGit = (...args) => execFileSync("git", args, { cwd: source, stdio: "pipe" });
         nestedGit("init");
         await writeFile(join(source, "source.txt"), "Initial module content");
-        nestedGit("add", "source.txt");
+        for (let index = 0; index < 20; index++) {
+            await writeFile(join(source, `extra-${index}.txt`), "Unchanged module content");
+        }
+        nestedGit("add", ".");
         nestedGit("-c", "user.name=Test", "-c", "user.email=test@example.com",
             "commit", "-m", "docs: Add module");
         git("-c", "protocol.file.allow=always", "submodule", "add", source, "module");
@@ -298,9 +303,22 @@ test("Define detects overwrites inside a pre-existing dirty submodule", async ()
             if (options.label === "Define") await writeFile(join("module", "source.txt"), "Overwritten");
             return result;
         };
-        const result = await lifecycle.run(h.ctx);
-        assert.equal(result.verdict, "NO-GO");
-        assert.match(result.reason, /pre-existing work/);
+        const execute = childProcess.execFileSync;
+        let indexReads = 0;
+        const spy = t.mock.method(childProcess, "execFileSync", (command, args, options) => {
+            if (command === "git" && args.includes("--stage")) indexReads++;
+            return execute(command, args, options);
+        });
+        syncBuiltinESMExports();
+        try {
+            const result = await lifecycle.run(h.ctx);
+            assert.equal(result.verdict, "NO-GO");
+            assert.match(result.reason, /pre-existing work/);
+            assert.ok(indexReads <= 6, `Expected batched index reads, observed ${indexReads}`);
+        } finally {
+            spy.mock.restore();
+            syncBuiltinESMExports();
+        }
     });
 });
 
