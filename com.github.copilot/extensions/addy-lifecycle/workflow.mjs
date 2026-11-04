@@ -636,24 +636,38 @@ export const lifecycle = {
         };
         const preparedPlan = await ctx.step(`prepared-plan-v1:${planRevision}`, readPlan);
         if (preparedPlan.error) return stop("Plan", preparedPlan.error);
-        const planApproval = await ctx.step(`approved-plan-v1:${planRevision}`, async () => {
+        const validatePlan = async () => {
             const currentPlan = await readPlan();
             if (currentPlan.error || JSON.stringify(currentPlan) !== JSON.stringify(preparedPlan)) {
                 return { error: "Plan changed without a revision request. Add plan feedback to revisionPath and resume for fresh approval." };
             }
+            return preparedPlan;
+        };
+        const planApproval = await ctx.step(`approved-plan-v1:${planRevision}`, async () => {
+            const validation = await validatePlan();
+            if (validation.error) return validation;
             await approve(planRevision ? `approve-plan:${planRevision}` : "approve-plan",
                 { ...plan, artifacts: preparedPlan.artifacts });
             return preparedPlan;
         });
         if (planApproval.error) return stop("Plan", planApproval.error);
-        const planCommit = await agent("Commit:plan",
-            "The exact plan and task list have been explicitly approved. Commit only these planning " +
-            "artifacts relative to the workflow baseline and the completed spec commit. " +
-            "Do not modify their content or implement any task. " + commitInstructions,
-            { goal: ctx.args.goal, spec, specCommit, plan, preparedPlan }, schema({ commit: text }));
+        const committedPlan = await ctx.step(`committed-plan-v1:${planRevision}`, async () => {
+            const validation = await validatePlan();
+            if (validation.error) return validation;
+            return { report: await agent("Commit:plan",
+                "The exact plan and task list have been explicitly approved. Commit only these planning " +
+                "artifacts relative to the workflow baseline and the completed spec commit. " +
+                "Do not modify their content or implement any task. " + commitInstructions,
+                { goal: ctx.args.goal, spec, specCommit, plan, preparedPlan }, schema({ commit: text })) };
+        });
+        if (committedPlan.error) return stop("Plan", committedPlan.error);
+        const planCommit = committedPlan.report;
+        reports["Commit:plan"] = planCommit;
         if (!committed(planCommit)) return stop("Commit:plan", "Approved plan commit missing, failed, or unverified.");
 
         ctx.phase("Build");
+        const buildPlan = await ctx.step(`build-plan-entry-v1:${planRevision}`, validatePlan);
+        if (buildPlan.error) return stop("Plan", buildPlan.error);
         const completed = [...plan.completed];
         for (const task of tasks) {
             const result = await agent(`Build:${task.id}`,

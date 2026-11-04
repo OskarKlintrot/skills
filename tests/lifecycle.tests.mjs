@@ -538,6 +538,30 @@ test("plan files changed while paused cannot be committed under stale approval",
     });
 });
 
+test("an interrupted plan commit cannot reuse approval after the plan changes", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        let interrupted = false;
+        h.ctx.agent = async (prompt, options) => {
+            if (options.label === "Commit:plan" && !interrupted) {
+                interrupted = true;
+                throw new Error("Interrupted before plan commit");
+            }
+            return agent(prompt, options);
+        };
+        await approvePlan(h);
+        await assert.rejects(() => lifecycle.run(h.ctx), /Interrupted before plan commit/);
+        await writeFile("plan.md", "# Changed after approval");
+        const resumed = await lifecycle.run(h.ctx);
+        assert.equal(resumed.verdict, "NO-GO");
+        assert.equal(resumed.phase, "Plan");
+        assert.match(resumed.reason, /Plan changed/);
+        assert.equal(h.calls.some((call) => call.label === "Commit:plan"), false);
+        assert.equal(h.calls.some((call) => call.label.startsWith("Build:")), false);
+    });
+});
+
 test("resuming after Build preserves approved plan ownership despite task status updates", async () => {
     await inRepository(async () => {
         const h = generatedSpecHarness();
