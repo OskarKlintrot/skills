@@ -72,9 +72,15 @@ foreach ($name in $skills.Keys) {
     $header = [regex]::Match($content, '\A---\r?\ndescription: ([^\r\n]+)\r?\n---\r?\n')
     Assert-Check "$name has description-only Copilot command frontmatter" $header.Success
     if ($header.Success) { $descriptions[$name] = $header.Groups[1].Value }
-    $skillProvider = if ($name -eq 'addy-lifecycle') { 'oskar-tools' } else { 'agent-skills' }
-    Assert-Check "$name invokes its installed skill" ($content.Contains("${skillProvider}:$($skills[$name])"))
-    Assert-Check "$name reports missing skill dependencies" ($content -match '(?i)skill.*unavailable.*stop')
+    if ($name -eq 'addy-lifecycle') {
+        Assert-Check "$name only triggers its standalone workflow" (
+            $content.Contains('dynamic workflow') -and $content -notmatch 'agent-skills:|skill.*unavailable'
+        )
+    }
+    else {
+        Assert-Check "$name invokes its installed skill" ($content.Contains("agent-skills:$($skills[$name])"))
+        Assert-Check "$name reports missing skill dependencies" ($content -match '(?i)skill.*unavailable.*stop')
+    }
     Assert-Check "$name has no Claude runtime or plugin-cache assumptions" (
         $content -notmatch 'CLAUDE\.md|\.claude[/\\]|disable-model-invocation|subagent_type|Agent Teams|Agent tool|\$ARGUMENTS|installed-plugins[/\\]'
     )
@@ -105,35 +111,30 @@ Assert-Check 'Spec preserves its upstream skill commit workflow' (
 $lifecycle = Get-Content -LiteralPath (Join-Path $root 'skills' 'addy-lifecycle' 'SKILL.md') -Raw
 Assert-Check 'Addy lifecycle skill has discoverable metadata and starts its workflow' (
     $lifecycle -match '\A---\r?\nname: addy-lifecycle\r?\ndescription: [^\r\n]+' -and
-    $lifecycle.Contains('run the `addy-lifecycle` dynamic') -and
+    $lifecycle.Contains('dynamic workflow with `{ "goal"') -and
     -not (Test-Path -LiteralPath (Join-Path $directory 'lifecycle.md'))
 )
-Assert-Check 'Lifecycle prepares requirements in the main conversation with interview terminal gate' (
-    $lifecycle.Contains('agent-skills:interview-me') -and
-    $lifecycle.Contains('`ask_user` in this main conversation') -and
-    $lifecycle.Contains('terminal-turn rule') -and
-    $lifecycle.Contains('Do not write a spec') -and
-    $lifecycle.Contains('same turn as intent confirmation')
+Assert-Check 'Lifecycle skill only triggers the standalone workflow' (
+    $lifecycle.Contains('workflow owns the complete lifecycle') -and
+    $lifecycle.Contains('Do not prepare artifacts') -and
+    $lifecycle -notmatch 'agent-skills:|interview-me|specPath|baselinePath'
 )
-Assert-Check 'Plan feedback keeps execution paused and requires approval of revised output' (
-    $lifecycle.Contains('choices to approve, request changes, or stop') -and
-    $lifecycle.Contains('keep the old run paused and do not start building') -and
-    $lifecycle.Contains('never resume the old run with changed files') -and
-    $lifecycle.Contains('If it differs, present it again and obtain explicit approval')
-)
-Assert-Check 'Lifecycle passes a prepared spec and routes all worker input to the user' (
-    $lifecycle.Contains('"specPath"') -and
-    $lifecycle.Contains('`needsInput`') -and
-    $lifecycle.Contains('Define, Plan, Build, Verify,') -and
-    $lifecycle.Contains('Review and Ship') -and
-    $lifecycle.Contains('Do not auto-approve.')
-)
-Assert-Check 'Lifecycle requires approved atomic commits with an explicit baseline handoff' (
-    $lifecycle.Contains('agent-skills:git-workflow-and-versioning') -and
-    $lifecycle.Contains('git diff --cached') -and
-    $lifecycle.Contains('"baselinePath"') -and
-    $lifecycle.Contains('commits each verified task separately') -and
-    $lifecycle -notmatch 'leaves all changes uncommitted|Do not commit, push'
+$workflow = Get-Content -LiteralPath (Join-Path $root 'com.github.copilot' 'extensions' 'addy-lifecycle' 'workflow.mjs') -Raw
+Assert-Check 'Workflow owns all six phases, approval gates, baseline capture and Git safeguards' (
+    $workflow.Contains('Define -> Plan -> Build -> Verify -> Review -> Ship') -and
+    $workflow.Contains('approve-spec') -and $workflow.Contains('approve-plan') -and
+    $workflow.Contains('captureBaseline') -and $workflow.Contains('git diff --cached') -and
+    $workflow.Contains('agent-skills:spec-driven-development') -and
+    $workflow.Contains('agent-skills:planning-and-task-breakdown') -and
+    $workflow.Contains('agent-skills:incremental-implementation') -and
+    $workflow.Contains('agent-skills:test-driven-development') -and
+    $workflow.Contains('agent-skills:shipping-and-launch') -and
+    $workflow.Contains('agent-skills:git-workflow-and-versioning') -and
+    $workflow.Contains('do not prohibit creating an appropriate feature branch') -and
+    $workflow -notmatch 'Do not create branches' -and
+    $workflow.Contains('oskar-tools:code-reviewer') -and
+    $workflow.Contains('oskar-tools:security-auditor') -and
+    $workflow.Contains('oskar-tools:test-engineer')
 )
 
 $exhaustive = Get-Content -LiteralPath (Join-Path $root 'skills' 'exhaustive-task' 'SKILL.md') -Raw
@@ -185,7 +186,7 @@ try {
     Assert-Check 'Installed plugin discovers the exhaustive-task skill' (
         $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('exhaustive-task')
     )
-    $workflowOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run addy-lifecycle --args '{"goal":"A goal without a prepared spec"}' 2>&1
+    $workflowOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run addy-lifecycle --args '{"notGoal":"invalid"}' 2>&1
     Assert-Check 'Installed lifecycle workflow loads and enforces its argument schema' (
         $LASTEXITCODE -eq 2 -and
         ($workflowOutput -join "`n").Contains('Invalid arguments for dynamic workflow "addy-lifecycle".')
@@ -194,13 +195,6 @@ try {
     Assert-Check 'Installed exhaustive-task workflow loads and enforces its argument schema without agents' (
         $LASTEXITCODE -eq 2 -and
         ($exhaustiveOutput -join "`n").Contains('Invalid arguments for dynamic workflow "exhaustive-task".')
-    )
-    $preflightOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run addy-lifecycle --args '{"goal":"Preflight only","specPath":"tests\\fixtures\\nonexistent-lifecycle-spec.md","baselinePath":"session-baseline.json"}' 2>&1
-    Assert-Check 'Installed workflow rejects a missing spec without spawning model tasks' (
-        $LASTEXITCODE -eq 0 -and
-        ($preflightOutput -join "`n").Contains('"verdict":"NO-GO"') -and
-        ($preflightOutput -join "`n").Contains('"reports":{}') -and
-        ($preflightOutput -join "`n").Contains('Cannot read specPath (ENOENT)')
     )
 
     # PowerShell resolves npm launchers as well as native CLI installations.
@@ -274,7 +268,7 @@ try {
         $_.name -notin @($skills.Keys | ForEach-Object { "$($manifest.name):$_" })
     } | ForEach-Object { $_.name.Substring($manifest.name.Length + 1) })
     $skillOnlyCommands = @($packagedSkills | Where-Object { $_ -notin $skills.Keys })
-    Assert-Check 'Isolated install registers skill commands without duplicating coordinator command' (
+    Assert-Check 'Isolated install registers skill commands without duplicating the lifecycle trigger' (
         -not (Compare-Object $skillOnlyCommands $registeredSkills)
     )
 }

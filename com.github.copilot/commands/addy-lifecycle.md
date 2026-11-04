@@ -1,11 +1,10 @@
 ---
-description: Start the Addy lifecycle with interactive requirements, plan feedback and approved execution
+description: Start the standalone Addy lifecycle workflow for a feature idea or existing specification
 ---
 
-Invoke the installed `oskar-tools:addy-lifecycle` skill in this main conversation.
-If the skill is unavailable, stop and report the missing dependency; do not silently
-substitute a generic workflow or launch the dynamic workflow directly.
+Start the `addy-lifecycle` dynamic workflow with the user's request as its
+`goal`. The workflow owns the complete lifecycle; do not prepare requirements
+or artifacts or perform any lifecycle phase in this conversation.
 
-Use the text following this command as the feature or existing spec to work on.
-Follow the skill's preparation, plan feedback and explicit approval gates before
-starting or resuming the `addy-lifecycle` dynamic workflow.
+If the dynamic workflow is unavailable, report that limitation rather than
+substituting another workflow.
