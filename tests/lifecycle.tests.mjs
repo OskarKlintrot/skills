@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { join, relative, resolve } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { lifecycle } from "../com.github.copilot/extensions/addy-lifecycle/workflow.mjs";
 
 const check = { command: "npm test", outcome: "passed", evidence: "All tests passed" };
@@ -11,10 +12,17 @@ const task = (id, dependsOn = []) => ({ id, title: id, acceptance: "Works", depe
 const report = (extra = {}) => ({
     status: "ready", summary: "Ready", evidence: ["SPEC.md"], checks: [check], questions: [], ...extra,
 });
+const planReport = (extra = {}) => report({
+    artifactPaths: [join("tests", "fixtures", "lifecycle-plan.md")], ...extra,
+});
+const generatedPlans = [];
+afterEach(async () => {
+    for (const path of generatedPlans.splice(0)) await rm(path, { force: true });
+});
 const responses = () => ({
     Define: report({ specPath: join("tests", "fixtures", "lifecycle-spec.md") }),
     "Commit:spec": report({ commit }),
-    Plan: report({ tasks: [task("second", ["first"]), task("first")], completed: [] }),
+    Plan: planReport({ tasks: [task("second", ["first"]), task("first")], completed: [] }),
     "Commit:plan": report({ commit }),
     "Build:first": report({ commit }),
     "Build:second": report({ commit }),
@@ -27,6 +35,10 @@ const responses = () => ({
 
 function harness(overrides = {}, args = { goal: "Build a feature" }) {
     const answers = { ...responses(), ...overrides };
+    const defaultPlanPath = join("tests", "fixtures", `lifecycle-plan-${randomUUID()}.md`);
+    if (answers.Plan?.artifactPaths?.[0] === join("tests", "fixtures", "lifecycle-plan.md")) {
+        answers.Plan = { ...answers.Plan, artifactPaths: [defaultPlanPath] };
+    }
     const journal = new Map();
     const checkpoints = new Set();
     const calls = [];
@@ -41,6 +53,10 @@ function harness(overrides = {}, args = { goal: "Build a feature" }) {
             calls.push({ prompt, ...options });
             const value = answers[options.label];
             assert.notEqual(value, undefined, `Unexpected agent ${options.label}`);
+            if (options.label === "Plan" && value?.artifactPaths?.includes(defaultPlanPath)) {
+                await writeFile(defaultPlanPath, "# Generated plan");
+                generatedPlans.push(resolve(defaultPlanPath));
+            }
             journal.set(key, value);
             return value;
         },
@@ -89,7 +105,10 @@ async function inRepository(action, initialCommit = true) {
 }
 
 function generatedSpecHarness(specPath = "SPEC.md", args) {
-    const h = harness({ Define: report({ specPath }) }, args);
+    const h = harness({
+        Define: report({ specPath }),
+        Plan: planReport({ artifactPaths: ["plan.md"], tasks: [task("first")], completed: [] }),
+    }, args);
     const agent = h.ctx.agent;
     let written = false;
     h.ctx.agent = async (prompt, options) => {
@@ -98,10 +117,159 @@ function generatedSpecHarness(specPath = "SPEC.md", args) {
             written = true;
             await writeFile(specPath, "# Generated specification");
         }
+        if (options.label === "Plan" && !h.calls.some((call) => call.label === "Commit:plan")) {
+            try {
+                await readFile("plan.md");
+            } catch (error) {
+                if (error.code !== "ENOENT") throw error;
+                await writeFile("plan.md", "# Generated plan");
+            }
+        }
         return result;
     };
     return h;
 }
+
+test("returning to earlier plan feedback regenerates artifacts and pauses for fresh approval", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        let plans = 0;
+        h.ctx.agent = async (prompt, options) => {
+            const calls = h.calls.length;
+            const result = await agent(prompt, options);
+            if (options.label === "Plan" && h.calls.length > calls) {
+                await writeFile("plan.md", `# Plan generation ${++plans}`);
+            }
+            return result;
+        };
+        await approvePlan(h);
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        await mkdir("tasks");
+        for (const feedback of ["A", "B", "A"]) {
+            await writeFile(context.revisionRequestPath, JSON.stringify({ plan: feedback }));
+            await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        }
+        assert.equal(h.calls.filter((call) => call.label === "Plan").length, 4);
+        assert.equal(await readFile("plan.md", "utf8"), "# Plan generation 4");
+        assert.equal(h.calls.some((call) => call.label.startsWith("Build:")), false);
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+    });
+});
+
+test("Define rejects a new commit on both initialized and unborn branches", async () => {
+    for (const initialized of [true, false]) {
+        await inRepository(async (_, git) => {
+            const h = generatedSpecHarness();
+            const agent = h.ctx.agent;
+            h.ctx.agent = async (prompt, options) => {
+                const result = await agent(prompt, options);
+                if (options.label === "Define") {
+                    await writeFile("unrelated.txt", "Committed outside the specification");
+                    git("add", "unrelated.txt");
+                    git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                        "commit", "-m", "docs: Add unrelated content");
+                }
+                return result;
+            };
+            const result = await lifecycle.run(h.ctx);
+            assert.equal(result.verdict, "NO-GO");
+            assert.match(result.reason, /HEAD/);
+        }, initialized);
+    }
+});
+
+test("returning to earlier spec feedback requires fresh spec and plan approvals", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        let specs = 0;
+        h.ctx.agent = async (prompt, options) => {
+            const calls = h.calls.length;
+            const result = await agent(prompt, options);
+            if (options.label === "Define" && h.calls.length > calls) {
+                await writeFile("SPEC.md", `# Specification generation ${++specs}`);
+            }
+            return result;
+        };
+        await approvePlan(h);
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        await mkdir("tasks");
+        for (const feedback of ["A", "B", "A"]) {
+            await writeFile(context.revisionRequestPath, JSON.stringify({ define: feedback }));
+            await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-spec:/);
+            await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        }
+        assert.equal(h.calls.filter((call) => call.label === "Define").length, 4);
+        assert.equal(h.calls.filter((call) => call.label === "Plan").length, 4);
+        assert.equal(await readFile("SPEC.md", "utf8"), "# Specification generation 4");
+        assert.equal(h.calls.some((call) => call.label === "Commit:plan"), false);
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+    });
+});
+
+test("an approved spec commit does not invalidate Define observations on replay", async () => {
+    await inRepository(async (_, git) => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const calls = h.calls.length;
+            const result = await agent(prompt, options);
+            if (options.label === "Commit:spec" && h.calls.length > calls) {
+                git("add", "SPEC.md");
+                git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                    "commit", "-m", "docs: Add approved specification");
+            }
+            return result;
+        };
+        await approvePlan(h);
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+        assert.equal(h.calls.filter((call) => call.label === "Define").length, 1);
+        assert.equal(h.calls.filter((call) => call.label === "Commit:spec").length, 1);
+    });
+});
+
+test("Define rejects staged-only edits to initially clean tracked content", async () => {
+    await inRepository(async (_, git) => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            if (options.label === "Define") {
+                await writeFile("seed.txt", "Staged replacement");
+                git("add", "seed.txt");
+                await writeFile("seed.txt", "Initial content");
+            }
+            return result;
+        };
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.match(result.reason, /outside its assigned spec/);
+    });
+});
+
+test("a spec revision cannot switch away from its original workflow-owned path", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
+            if (options.label === "Define" && context.revisions.define) {
+                await writeFile("other-spec.md", "# Unrelated specification");
+                return { ...result, specPath: "other-spec.md" };
+            }
+            return result;
+        };
+        await approveSpec(h);
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        await mkdir("tasks");
+        await writeFile(context.revisionRequestPath, JSON.stringify({ define: "Revise the spec" }));
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.match(result.reason, /workflow-owned spec/);
+    });
+});
 
 test("a repository without an initial commit can reach spec approval", async () => {
     await inRepository(async () => {
@@ -110,6 +278,86 @@ test("a repository without an initial commit can reach spec approval", async () 
         const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
         assert.equal(context.baseline.head, null);
     }, false);
+});
+
+test("a spec revision cannot overwrite an unrelated initially clean tracked file", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness("SPEC.md", {
+            goal: "Build a feature", revisionPath: "revision.json",
+        });
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
+            if (options.label === "Define" && context.revisions.define) {
+                await writeFile("seed.txt", "# Replacement specification");
+                return { ...result, specPath: "seed.txt" };
+            }
+            return result;
+        };
+        await approveSpec(h);
+        await writeFile("revision.json", JSON.stringify({ define: "Revise the specification" }));
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.match(result.reason, /existing tracked file|workflow-owned spec/);
+        assert.equal(h.calls.some((call) => call.label === "Commit:spec"), false);
+    });
+});
+
+test("plan files changed while paused cannot be committed under stale approval", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        await approvePlan(h);
+        await writeFile("plan.md", "# Unapproved replacement plan");
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.match(result.reason, /Plan changed/);
+        assert.equal(h.calls.some((call) => call.label === "Commit:plan"), false);
+        assert.equal(h.calls.some((call) => call.label.startsWith("Build:")), false);
+    });
+});
+
+test("resuming after Build preserves approved plan ownership despite task status updates", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        let interrupted = false;
+        h.ctx.agent = async (prompt, options) => {
+            if (options.label === "Verify" && !interrupted) {
+                interrupted = true;
+                throw new Error("Verification interrupted");
+            }
+            const result = await agent(prompt, options);
+            if (options.label === "Build:first") await writeFile("plan.md", "# Task completed");
+            return result;
+        };
+        await approvePlan(h);
+        await assert.rejects(() => lifecycle.run(h.ctx), /Verification interrupted/);
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+        assert.equal(h.calls.filter((call) => call.label === "Build:first").length, 1);
+        assert.equal(await readFile("plan.md", "utf8"), "# Task completed");
+    });
+});
+
+test("missing or protected plan artifact paths cannot reach approval", async () => {
+    for (const artifactPaths of [undefined, [], ["SPEC.md"], ["revision.json"], ["missing.md"]]) {
+        await inRepository(async () => {
+            const h = generatedSpecHarness("SPEC.md", {
+                goal: "Build a feature", revisionPath: "revision.json",
+            });
+            const agent = h.ctx.agent;
+            h.ctx.agent = async (prompt, options) => {
+                const result = await agent(prompt, options);
+                if (options.label === "Plan") return { ...result, artifactPaths };
+                return result;
+            };
+            await approveSpec(h);
+            const result = await lifecycle.run(h.ctx);
+            assert.equal(result.verdict, "NO-GO");
+            assert.equal(result.phase, "Plan");
+            assert.equal(h.calls.some((call) => call.label === "Commit:plan"), false);
+        });
+    }
 });
 
 test("Define detects overwrites of untracked work, tracked edits and staged content", async () => {
@@ -431,7 +679,7 @@ test("invalid dependency graphs never reach the plan approval gate", async () =>
         [task("a", ["b"]), task("b", ["a"])], [task("a", ["a"])],
         [task("../bad")], [task("a", ["b", "b"]), task("b")],
     ]) {
-        const h = harness({ Plan: report({ tasks, completed: [] }) });
+        const h = harness({ Plan: planReport({ tasks, completed: [] }) });
         await approveSpec(h);
         const result = await lifecycle.run(h.ctx);
         assert.equal(result.verdict, "NO-GO");
@@ -442,7 +690,7 @@ test("invalid dependency graphs never reach the plan approval gate", async () =>
 
 test("a fresh recovery run uses completed prerequisites without rebuilding them", async () => {
     const completed = [{ task: task("first"), report: report({ commit }) }];
-    const h = harness({ Plan: report({ tasks: [task("second", ["first"])], completed }) });
+    const h = harness({ Plan: planReport({ tasks: [task("second", ["first"])], completed }) });
     await approvePlan(h);
     assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
     const planning = h.calls.find((c) => c.label === "Plan");
@@ -464,7 +712,7 @@ test("recovery after post-build NO-GO can reassess without new Build calls", asy
         { task: task("first"), report: stopped.reports["Build:first"] },
         { task: task("second", ["first"]), report: stopped.reports["Build:second"] },
     ];
-    const h = harness({ Plan: report({ tasks: [], completed }) });
+    const h = harness({ Plan: planReport({ tasks: [], completed }) });
     await approvePlan(h);
     assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
     assert.equal(h.calls.some((c) => c.label.startsWith("Build:")), false);
@@ -494,7 +742,7 @@ test("invalid completed work cannot bypass the plan gate", async () => {
         { tasks: [], completed: null },
         { tasks: [task("first")] },
     ]) {
-        const h = harness({ Plan: report(plan) });
+        const h = harness({ Plan: planReport(plan) });
         await approveSpec(h);
         const result = await lifecycle.run(h.ctx);
         assert.equal(result.phase, "Plan");
@@ -624,6 +872,8 @@ test("spec and plan commits happen only after their own approvals", async () => 
         assert.match(call.prompt, /Do not use git add -A/);
         assert.match(call.prompt, /commit each verified implementation increment atomically/);
         assert.doesNotMatch(call.prompt, /Do not create branches/);
+        assert.doesNotMatch(call.prompt, /allowed types are|at most 72 characters/);
+        assert.match(call.prompt, /repository-required attribution trailers/);
         assert.ok(call.schema.required.includes("commit"));
     }
 });
