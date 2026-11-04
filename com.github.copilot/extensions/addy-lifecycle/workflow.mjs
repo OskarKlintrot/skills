@@ -116,7 +116,8 @@ async function pathState(path, root = worktreeRoot(), indexEntries) {
 
 async function captureBaseline() {
     const root = worktreeRoot();
-    const records = execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+    const records = execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all",
+        "--ignore-submodules=none"], {
         cwd: root, maxBuffer: 16 * 1024 * 1024,
     }).toString("utf8").split("\0").filter(Boolean);
     const stagedPaths = [];
@@ -418,7 +419,9 @@ export const lifecycle = {
             "preserve unrelated files and report unresolved decisions.";
         const initialSpec = await ctx.step("initial-spec-selection-v1", () => agent("Define",
             defineInstruction, { goal: ctx.args.goal }, schema({ specPath: text })));
-        const selectedSpec = specRevision && (!evidenced(initialSpec) || !nonempty(initialSpec.specPath)) ?
+        const missingInitialSpec = !evidenced(initialSpec) || !nonempty(initialSpec.specPath) ||
+            Boolean((await loadSpec(initialSpec.specPath)).error);
+        const selectedSpec = specRevision && missingInitialSpec ?
             await agent("Define", defineInstruction, { goal: ctx.args.goal, clarifying: true },
                 schema({ specPath: text })) : initialSpec;
         if (!evidenced(selectedSpec)) {

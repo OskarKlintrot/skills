@@ -278,6 +278,27 @@ test("clarification remains paused until feedback produces a spec in the same ru
     });
 });
 
+test("Define feedback recovers when its earlier reported spec was never created", async () => {
+    await inRepository(async () => {
+        const h = harness({ Define: report({ specPath: "SPEC.md" }) });
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
+            if (options.label === "Define" && context.revisions.define) {
+                await writeFile("SPEC.md", "# Recovered specification");
+            }
+            return result;
+        };
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "NO-GO");
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        await mkdir("tasks");
+        await writeFile(context.revisionRequestPath, JSON.stringify({ define: "Create the missing spec" }));
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-spec:/);
+        assert.equal(await readFile("SPEC.md", "utf8"), "# Recovered specification");
+    });
+});
+
 test("Define detects dirty submodule overwrites with batched index reads", async (t) => {
     await inRepository(async (directory, git) => {
         const source = join(directory, "module-source");
@@ -294,6 +315,7 @@ test("Define detects dirty submodule overwrites with batched index reads", async
         git("-c", "protocol.file.allow=always", "submodule", "add", source, "module");
         git("-c", "user.name=Test", "-c", "user.email=test@example.com",
             "commit", "-m", "build: Add submodule");
+        git("config", "submodule.module.ignore", "all");
         await rm(source, { recursive: true, force: true });
         await writeFile(join("module", "source.txt"), "User's unfinished module changes");
         const h = generatedSpecHarness();
