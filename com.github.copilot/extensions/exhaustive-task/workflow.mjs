@@ -567,7 +567,8 @@ export const exhaustiveTask = {
             if (batch) cursor += batch.length;
             else {
                 reviews.push({ round, strategy: result.strategy, newFindings, newLocations, changes: result.changes.length });
-                quiet = newFindings.length || newLocations || result.changes.length ? 0 : quiet + 1;
+                // New locations are kept but are not progress; models can almost always find one more.
+                quiet = newFindings.length || result.changes.length ? 0 : quiet + 1;
                 repair = null;
             }
             lastFingerprint = result.after;

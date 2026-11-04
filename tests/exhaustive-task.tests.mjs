@@ -293,12 +293,12 @@ test("repos mode discovers repositories and processes one per round by default",
     assert.deepEqual(h.calls[0].context.repos, [a, b]);
 });
 
-test("review rounds that only add locations to known findings are not quiet", async (t) => {
+test("review rounds that only add locations to known findings count as quiet", async (t) => {
     const root = await temp(t);
     const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
     const h = harness({
         goal: "Find every ADO integration", acceptance: "All listed", mode: "search", paths: [path],
-        ledgerPath: join(root, "ledger.md"), quietRounds: 1,
+        ledgerPath: join(root, "ledger.md"), quietRounds: 2,
     }, defaultHandler({
         Work: ({ round }) => round === 1 ? work([], [finding("sdk", "a.cs:1")], [], "grep")
             : round === 2 ? work([], [finding("sdk", "b.cs:2")], [], "trace callers") : undefined,
