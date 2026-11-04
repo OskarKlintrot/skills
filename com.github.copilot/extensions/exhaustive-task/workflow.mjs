@@ -563,8 +563,9 @@ export const exhaustiveTask = {
                 for (let attempt = 1; ; attempt++) {
                     ctx.phase("Work");
                     fix = verification?.remaining ?? (batch ? null : repair);
+                    const previous = work;
                     work = await call(`Work:${round}:${attempt}`, batch ? unitInstruction : reviewInstruction, {
-                        ...context, repair: fix, previousAttempt: work,
+                        ...context, repair: fix, previousAttempt: previous,
                         ledger: fix === null ? context.ledger : { ...context.ledger, findings: state.findings },
                         rejectedFindings: [...new Set([...rejected, ...refused])],
                     }, workSchema, workModel);
@@ -572,6 +573,18 @@ export const exhaustiveTask = {
                         !sameSet(work.processed ?? [], batch ?? []) || (!batch && !nonempty(work.strategy))) {
                         return blocked("Work", batch ? "Work report is blocked, unevidenced or does not cover " +
                             "exactly the batch." : "Review report is blocked, unevidenced or lacks a strategy.", work);
+                    }
+                    if (previous) {
+                        // Repair attempts often report only what they fixed; keep what earlier attempts found.
+                        const merged = new Map(previous.findings.filter((entry) => !refused.has(entry.id))
+                            .map((entry) => [entry.id, entry]));
+                        for (const entry of work.findings) {
+                            const earlier = merged.get(entry.id);
+                            merged.set(entry.id, earlier
+                                ? { ...entry, locations: [...new Set([...earlier.locations, ...entry.locations])] } : entry);
+                        }
+                        work = { ...work, findings: [...merged.values()],
+                            changes: [...new Set([...previous.changes, ...work.changes])] };
                     }
                     const current = await snapshot(plan.repos);
                     if (current.fingerprint === before.fingerprint) {

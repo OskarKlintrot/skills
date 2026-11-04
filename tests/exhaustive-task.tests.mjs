@@ -606,3 +606,28 @@ test("review attempts repairing a round verification complaint can correct findi
     assert.equal(result.status, "complete");
     assert.equal(result.findings[0].title, "Corrected");
 });
+
+test("repair attempts keep findings and changes from earlier attempts", async (t) => {
+    const f = await filesFixture(t, 1, { batchSize: 1, quietRounds: 1 });
+    const h = harness(f.args, defaultHandler({
+        Work: async ({ context, attempt }) => {
+            if (!context.batch.length) return undefined;
+            await writeFile(join(f.path, "src", "a.txt"), `cleaned ${attempt}\n`);
+            return attempt === 1 ? work(context.batch, [finding("hit", "src/a.txt:1")], ["src/a.txt: cleaned"])
+                : work(context.batch, [finding("hit", "src/a.txt:2")], ["src/a.txt: test fixed"]);
+        },
+        Verify: ({ attempt, context }) => {
+            if (attempt === 1) return report({ complete: false, remaining: "Fix the test", rejected: [] });
+            assert.deepEqual(context.work.changes, ["src/a.txt: cleaned", "src/a.txt: test fixed"]);
+            return verified();
+        },
+        Commit: () => {
+            git(f.path, "commit", "-qam", "refactor: clean batch");
+            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
+        },
+    }));
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.deepEqual(result.findings[0].locations, ["src/a.txt:1", "src/a.txt:2"]);
+    assert.match(await readFile(f.args.ledgerPath, "utf8"), /cleaned[\s\S]*test fixed/);
+});
