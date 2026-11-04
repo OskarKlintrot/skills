@@ -192,7 +192,10 @@ async function prepare(args) {
             return path.split(sep).join("/");
         });
         const units = await manifest(root, [...new Set(scope)], ledgerPath);
-        if (!units.length) throw new Error("No tracked or non-ignored files match paths.");
+        // A continued ledger may legitimately have deleted every scoped file in earlier rounds.
+        if (!units.length && !(await loadLedger(ledgerPath, args))?.processed.length) {
+            throw new Error("No tracked or non-ignored files match paths.");
+        }
         return { batchSize, quietRounds, maxRounds, ledgerPath, repos: [root], root, units };
     }
     if (args.mode === "repos" && !paths.every(isAbsolute)) throw new Error("repos mode paths must be absolute.");
@@ -289,7 +292,8 @@ function render(state, total) {
         for (const unit of state.processed) lines.push(`- ${unit}`);
         lines.push("");
     }
-    const json = JSON.stringify(state, null, 2).replaceAll(">", "\\u003e");
+    // Escape both brackets so text in the state can never contain the marker or the closing "-->".
+    const json = JSON.stringify(state, null, 2).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
     lines.push(marker, json, "-->", "");
     return lines.join("\n");
 }
@@ -336,7 +340,9 @@ Do not change remote systems. Do not install tools or dependencies unless the go
 Stop as blocked for ambiguous requirements, unavailable required checks or new high-risk decisions.
 Finding IDs are stable semantic kebab-case IDs. When something already exists in ledger.findings,
 reuse its ID (adding locations) instead of creating a duplicate. Never re-add IDs in rejectedFindings:
-verification found them inaccurate.
+verification found them inaccurate. When repair is supplied, ledger.findings includes details; to correct
+an existing finding, return it with the same ID and its complete corrected title and details, which then
+replace the ledger entry.
 `;
 
 const unitInstruction = "Process every unit in batch completely against the goal and acceptance: read each " +
@@ -354,9 +360,7 @@ const reviewInstruction = "Review round. The ledger lists what earlier rounds fo
     "there is no limit. Make at most batchSize changes; if more are needed, mention them in summary, since " +
     "another round follows. strategy describes what you searched. processed must be []. Return empty findings " +
     "and changes only after a genuine search, with evidence listing the searches and results. Run relevant " +
-    "checks for any changes. When repair is supplied, address it first: it comes from verification. To " +
-    "correct an existing finding, return it with the same ID and its complete corrected title and details; " +
-    "during repairs they replace the ledger entry, and ledger.findings then includes details.";
+    "checks for any changes. When repair is supplied, address it first: it comes from verification.";
 const verifyInstruction = "Read-only independent verification of a round that changed files; run only " +
     "non-mutating checks. Do not trust the worker summary. Check each finding is real, relevant to the goal " +
     "and not a duplicate of a different ledger entry; list inaccurate finding IDs in rejected. Check the " +
@@ -415,12 +419,14 @@ export const exhaustiveTask = {
         // Journal preparation: completed rounds may delete files that matched paths.
         const config = await ctx.step("prepare-v1", () => prepare(ctx.args));
         const plan = await ctx.step("plan-v1", async () => {
+            const previous = await loadLedger(config.ledgerPath, ctx.args);
             const preExisting = {};
-            for (const repo of config.repos) preExisting[repo] = await dirty(repo);
-            return {
-                previous: await loadLedger(config.ledgerPath, ctx.args),
-                repos: config.repos, units: config.units, preExisting,
-            };
+            // Edits kept from a blocked round belong to the workflow, not the user.
+            for (const repo of config.repos) {
+                const owned = previous?.pending?.owned?.[repo] ?? [];
+                preExisting[repo] = (await dirty(repo)).filter((path) => !owned.includes(path));
+            }
+            return { previous, repos: config.repos, units: config.units, preExisting };
         });
         const state = plan.previous ?? {
             version: 1, goal: ctx.args.goal, mode: ctx.args.mode, acceptance: ctx.args.acceptance,
@@ -525,24 +531,43 @@ export const exhaustiveTask = {
             // Journal the pre-round snapshot so a resumed round still sees its own edits as changes.
             const before = await ctx.step(`round-before-v1:${round}`, async () => {
                 const current = await snapshot(plan.repos);
-                return checkpoint !== null && current.fingerprint !== checkpoint ? { paused: true } : current;
+                if (checkpoint !== null && current.fingerprint !== checkpoint) return { paused: true };
+                // Kept edits from a blocked round are measured from that round's start, so they are verified and committed.
+                const pending = state.pending;
+                return pending && current.fingerprint !== pending.fingerprint
+                    ? { trees: pending.trees, fingerprint: pending.fingerprint } : current;
             });
             if (before.paused) return stop("Work", "Files changed while paused at the round checkpoint; start a new run.");
-            const replace = !batch && repair !== null;
             const result = await ctx.step(`round-v2:${round}`, async () => {
-                const blocked = (phase, reason, report) => ({ blocked: true, phase, reason, report });
+                const blocked = async (phase, reason, report) => {
+                    const now = await snapshot(plan.repos);
+                    let pending = null;
+                    if (now.fingerprint !== before.fingerprint) {
+                        const owned = {};
+                        for (const repo of plan.repos) {
+                            owned[repo] = (await dirty(repo)).filter((path) => !plan.preExisting[repo].includes(path));
+                        }
+                        pending = { trees: before.trees, fingerprint: before.fingerprint, owned };
+                    }
+                    return { blocked: true, phase, reason, report, pending };
+                };
                 const context = {
                     round, batch: batch ?? [], root: config.root ?? null,
-                    ledger: { findings: replace ? state.findings : brief(), processedCount: state.processed.length },
+                    ledger: { findings: brief(), processedCount: state.processed.length },
                     previousStrategies: strategies(), rejectedFindings: rejected,
                 };
                 let work = null;
                 let verification = null;
+                let fix = null;
+                const refused = new Set();
                 for (let attempt = 1; ; attempt++) {
                     ctx.phase("Work");
-                    work = await call(`Work:${round}:${attempt}`, batch ? unitInstruction : reviewInstruction,
-                        { ...context, repair: verification?.remaining ?? (batch ? null : repair), previousAttempt: work },
-                        workSchema, workModel);
+                    fix = verification?.remaining ?? (batch ? null : repair);
+                    work = await call(`Work:${round}:${attempt}`, batch ? unitInstruction : reviewInstruction, {
+                        ...context, repair: fix, previousAttempt: work,
+                        ledger: fix === null ? context.ledger : { ...context.ledger, findings: state.findings },
+                        rejectedFindings: [...new Set([...rejected, ...refused])],
+                    }, workSchema, workModel);
                     if (!evidenced(work) || !validFindings(work.findings) || !list(work.changes) ||
                         !sameSet(work.processed ?? [], batch ?? []) || (!batch && !nonempty(work.strategy))) {
                         return blocked("Work", batch ? "Work report is blocked, unevidenced or does not cover " +
@@ -566,19 +591,21 @@ export const exhaustiveTask = {
                     if ((await snapshot(plan.repos)).fingerprint !== current.fingerprint) {
                         return blocked("Verify", "Files changed during read-only verification.", verification);
                     }
+                    for (const id of verification.rejected) refused.add(id);
                     if (verification.complete) break;
                     if (attempt >= maxAttempts) {
                         return blocked("Verify", `Round still incomplete after ${maxAttempts} attempts.`, verification);
                     }
                 }
                 const outcome = {
-                    round, batch, strategy: work.strategy, changes: work.changes, summary: work.summary, replace,
-                    rejected: verification?.rejected ?? [],
-                    findings: work.findings.filter((finding) => !verification?.rejected.includes(finding.id) &&
-                        !rejected.includes(finding.id)),
+                    round, batch, strategy: work.strategy, changes: work.changes, summary: work.summary,
+                    replace: fix !== null, rejected: [...refused],
+                    findings: work.findings.filter((finding) => !refused.has(finding.id) && !rejected.includes(finding.id)),
                     commits: [],
                 };
-                await write(apply(structuredClone(state), outcome, ctx.runId).state);
+                const next = structuredClone(state);
+                delete next.pending;
+                await write(apply(next, outcome, ctx.runId).state);
                 const staged = await snapshot(plan.repos);
                 const changedRepos = plan.repos.filter((repo) => staged.trees[repo] !== before.trees[repo]);
                 if (changedRepos.length) {
@@ -603,8 +630,15 @@ export const exhaustiveTask = {
                 }
                 return outcome;
             });
-            if (result.blocked) return stop(result.phase, result.reason, result.report);
+            if (result.blocked) {
+                if (result.pending) {
+                    state.pending = result.pending;
+                    await write(state);
+                }
+                return stop(result.phase, result.reason, result.report);
+            }
             const { newFindings, newLocations } = apply(state, result, ctx.runId);
+            delete state.pending;
             commits.push(...result.commits.map((entry) => ({ round, ...entry })));
             if (batch) cursor += batch.length;
             else {

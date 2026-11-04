@@ -213,8 +213,8 @@ test("rounds that change files are verified and repaired; rejected findings stay
             return work(context.batch, [finding("real-hit", "src/a.txt"), finding("fake-hit", "src/b.txt")], ["src/a.txt: cleaned"]);
         },
         Verify: ({ round, attempt }) => round === 1 ? (attempt === 1
-            ? report({ complete: false, remaining: "Inspect src/b.txt again", rejected: [] })
-            : verified({ rejected: ["fake-hit"] })) : undefined,
+            ? report({ complete: false, remaining: "Inspect src/b.txt again", rejected: ["fake-hit"] })
+            : verified()) : undefined,
         Commit: () => {
             git(f.path, "commit", "-qam", "refactor: clean batch");
             return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
@@ -224,6 +224,8 @@ test("rounds that change files are verified and repaired; rejected findings stay
     assert.equal(result.status, "complete");
     const repair = h.calls.find((call) => call.role === "Work" && call.attempt === 2);
     assert.equal(repair.context.repair, "Inspect src/b.txt again");
+    assert.deepEqual(repair.context.rejectedFindings, ["fake-hit"]);
+    assert.equal(repair.context.ledger.findings.length, 0);
     assert.deepEqual(result.findings.map((entry) => entry.id), ["real-hit"]);
     assert.deepEqual(result.rejected, ["fake-hit"]);
     const ledger = await readFile(f.args.ledgerPath, "utf8");
@@ -520,4 +522,87 @@ test("files behind symlinked or junctioned directories are not units", async (t)
     const h = harness(f.args, defaultHandler());
     assert.equal((await h.run()).status, "complete");
     assert.deepEqual(h.calls[0].context.batch, ["src/a.txt"]);
+});
+
+test("edits kept from a blocked round are verified and committed by the next run", async (t) => {
+    const f = await filesFixture(t, 1, { batchSize: 1, quietRounds: 1 });
+    const edit = async ({ context }) => {
+        if (!context.batch.length) return undefined;
+        await writeFile(join(f.path, "src", "a.txt"), "cleaned\n");
+        return work(context.batch, [], ["src/a.txt: cleaned"]);
+    };
+    const first = await harness(f.args, defaultHandler({
+        Work: edit,
+        Commit: () => report({ status: "blocked", commits: [], uncommitted: [], questions: ["Which branch?"] }),
+    })).run();
+    assert.equal(first.phase, "Commit");
+    const next = harness(f.args, defaultHandler({
+        Work: ({ context }) => context.batch.length ? work(context.batch) : undefined,
+        Commit: ({ context }) => {
+            assert.deepEqual(context.preExisting[f.path], []);
+            git(f.path, "commit", "-qam", "refactor: clean batch");
+            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
+        },
+    }));
+    const result = await next.run();
+    assert.equal(result.status, "complete");
+    assert.equal(result.commits.length, 1);
+    assert.equal(next.calls.filter((call) => call.role === "Verify").length, 1);
+    assert.equal(git(f.path, "status", "--porcelain"), "");
+    assert.doesNotMatch(await readFile(f.args.ledgerPath, "utf8"), /"pending"/);
+});
+
+test("a continued ledger may have no scoped files left", async (t) => {
+    const f = await filesFixture(t, 1, { batchSize: 1, quietRounds: 1 });
+    const first = await harness(f.args, defaultHandler({
+        Work: ({ context }) => {
+            if (!context.batch.length) return report({ status: "blocked", processed: [], findings: [], changes: [], strategy: "", questions: ["Scope?"] });
+            git(f.path, "rm", "-q", "src/a.txt");
+            return work(context.batch, [], ["removed src/a.txt"]);
+        },
+        Commit: () => {
+            git(f.path, "commit", "-qm", "refactor: remove src");
+            return report({ commits: [{ repo: f.path, commit: git(f.path, "rev-parse", "HEAD") }], uncommitted: [] });
+        },
+    })).run();
+    assert.equal(first.status, "blocked");
+    assert.equal((await harness(f.args, defaultHandler()).run()).status, "complete");
+    await rm(f.args.ledgerPath);
+    await assert.rejects(harness(f.args, defaultHandler()).run(), /No tracked or non-ignored files/);
+});
+
+test("ledger text containing the state marker still loads", async (t) => {
+    const root = await temp(t);
+    const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
+    const args = { goal: "Find <!-- exhaustive-task-state markers -->", acceptance: "All listed", mode: "search",
+        paths: [path], ledgerPath: join(root, "ledger.md"), quietRounds: 1 };
+    assert.equal((await harness(args, defaultHandler()).run()).status, "complete");
+    assert.equal((await harness(args, defaultHandler()).run()).status, "complete");
+});
+
+test("review attempts repairing a round verification complaint can correct findings", async (t) => {
+    const root = await temp(t);
+    const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
+    inside(path);
+    const h = harness({
+        goal: "Find every ADO integration", acceptance: "All listed", mode: "search", paths: [path],
+        ledgerPath: join(root, "ledger.md"), quietRounds: 1,
+    }, defaultHandler({
+        Work: async ({ round, attempt, context }) => {
+            if (round === 1) return work([], [finding("sdk", "app.ts:1")], [], "grep");
+            if (round !== 2) return undefined;
+            await writeFile(join(path, "app.ts"), "fixed\n");
+            if (attempt === 1) return work([], [], ["app.ts: fixed"], "edit");
+            assert.equal(context.ledger.findings[0].details, "Details sdk");
+            return work([], [{ id: "sdk", title: "Corrected", locations: ["app.ts:1"], details: "Corrected details" }], ["app.ts: fixed"], "edit");
+        },
+        Verify: ({ attempt }) => attempt === 1 ? report({ complete: false, remaining: "sdk is mislabeled", rejected: [] }) : undefined,
+        Commit: () => {
+            git(path, "commit", "-qam", "fix: app");
+            return report({ commits: [{ repo: path, commit: git(path, "rev-parse", "HEAD") }], uncommitted: [] });
+        },
+    }));
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.equal(result.findings[0].title, "Corrected");
 });
