@@ -33,10 +33,17 @@ function harness(f, responses) {
     const journal = new Map();
     const calls = [];
     const logs = [];
+    const checkpoints = new Set();
     const ctx = {
         args: f.args, runId: "test-run",
         log: (message) => logs.push(message),
         phase() {},
+        async pause(key) {
+            if (!checkpoints.has(key)) {
+                checkpoints.add(key);
+                throw new Error(`PAUSED:${key}`);
+            }
+        },
         async step(key, producer) {
             if (!journal.has(key)) journal.set(key, await producer());
             return journal.get(key);
@@ -68,6 +75,60 @@ test("registered workflow declares its contract without model or resource overri
     assert.equal(exhaustiveTask.meta.name, "exhaustive-task");
     assert.deepEqual(exhaustiveTask.meta.argsSchema.required, ["goal", "scope", "acceptance"]);
     assert.equal(exhaustiveTask.meta.limits, undefined);
+});
+
+test("invalid optional round ceilings fail before agents are spawned", async (t) => {
+    const f = await fixture(t);
+    for (const maxRounds of [0, -1, 1.5, "2", null, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+        const h = harness({ args: { ...f.args, maxRounds } }, []);
+        await assert.rejects(() => exhaustiveTask.run(h.ctx), /maxRounds/);
+        assert.equal(h.calls.length, 0);
+    }
+});
+
+test("round ceiling pauses before more work and resume allows one more bounded batch", async (t) => {
+    const f = await fixture(t);
+    f.args.maxRounds = 1;
+    const c = item("integration-c");
+    const h = harness(f, [
+        ["Inventory:0", inventory([a])], ["Work:1:", work(f, "a\n")],
+        ["Verify:1:", verification()], ["Audit:1:", inventory([b])],
+        ["Work:2:", work(f, "a b\n")], ["Verify:2:", verification()],
+        ["Audit:2:", inventory([c])], ["Work:3:", work(f, "a b c\n")],
+        ["Verify:3:", verification()], ["Audit:3:", inventory()],
+    ]);
+    await assert.rejects(() => exhaustiveTask.run(h.ctx), /PAUSED:round-limit-v1:1/);
+    assert.equal(h.calls.length, 4);
+    assert.ok(h.logs.some((log) => log.includes("APPROVAL REQUIRED") && log.includes(b.id)));
+    await assert.rejects(() => exhaustiveTask.run(h.ctx), /PAUSED:round-limit-v1:2/);
+    assert.equal(h.calls.length, 7);
+    const result = await exhaustiveTask.run(h.ctx);
+    assert.equal(result.status, "complete");
+    assert.equal(result.round, 3);
+    assert.equal(h.calls.length, 10);
+});
+
+test("completion at the round ceiling does not pause or count partial work as complete", async (t) => {
+    const f = await fixture(t);
+    f.args.maxRounds = 1;
+    const h = harness(f, [["Inventory:0", inventory()], ["Audit:1:", inventory()]]);
+    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
+    assert.equal(h.logs.some((log) => log.includes("APPROVAL REQUIRED")), false);
+});
+
+test("external edits at a round checkpoint require a fresh run", async (t) => {
+    const f = await fixture(t);
+    f.args.maxRounds = 1;
+    const h = harness(f, [
+        ["Inventory:0", inventory([a])], ["Work:1:", work(f, "a\n")],
+        ["Verify:1:", verification()], ["Audit:1:", inventory([b])],
+    ]);
+    await assert.rejects(() => exhaustiveTask.run(h.ctx), /PAUSED:round-limit/);
+    await writeFile(f.path, "user revision\n");
+    const result = await exhaustiveTask.run(h.ctx);
+    assert.equal(result.status, "blocked");
+    assert.match(result.reason, /changed at the round checkpoint/);
+    assert.equal(h.calls.length, 4);
 });
 
 test("invalid arguments and paths are rejected before any model calls", async () => {

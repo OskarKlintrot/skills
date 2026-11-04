@@ -66,6 +66,9 @@ async function prepareScope(args) {
     if (!Array.isArray(args.scope) || !args.scope.length || !args.scope.every(nonempty)) {
         throw new Error("scope must be a non-empty array of repository-relative files or directories.");
     }
+    if (args.maxRounds !== undefined && (!Number.isSafeInteger(args.maxRounds) || args.maxRounds < 1)) {
+        throw new Error("maxRounds must be a positive safe integer when supplied.");
+    }
     const root = await realpath(process.cwd());
     const { stdout } = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: root });
     if (await realpath(stdout.trim()) !== root) throw new Error("Run from the worktree root.");
@@ -131,12 +134,14 @@ export const exhaustiveTask = {
         description: "Exhaust a scoped repository task: discover items, sequentially work and independently " +
             "verify each, then re-inventory the entire scope until no work remains. Blocks on missing " +
             "evidence, human decisions or no progress; never reports partial work as complete. " +
-            "args: { goal: string, scope: string[], acceptance: string }. Scope paths are relative to " +
+            "args: { goal: string, scope: string[], acceptance: string, maxRounds?: number }. " +
+            "maxRounds pauses after each batch of that many rounds; explicit approval is required " +
+            "before resuming the same run. Scope paths are relative to " +
             "the worktree root; use [\".\"] for the repository. No commits or external changes.",
         phases: ["Inventory", "Work", "Verify", "Audit"].map((title) => ({ title })),
         argsSchema: {
             type: "object", required: ["goal", "scope", "acceptance"],
-            properties: { goal: text, scope: strings, acceptance: text },
+            properties: { goal: text, scope: strings, acceptance: text, maxRounds: { type: "integer" } },
         },
     },
     run: async (ctx) => {
@@ -146,6 +151,7 @@ export const exhaustiveTask = {
         let pending = [];
         let round = 0;
         let lastAudit = null;
+        let lastFingerprint = null;
         const stop = (phase, reason, report = null) => {
             ctx.log(`BLOCKED at ${phase}: ${reason}`);
             return {
@@ -182,9 +188,22 @@ export const exhaustiveTask = {
         for (const item of pending) known.set(item.id, item);
 
         while (true) {
+            let checkpointFingerprint = null;
+            if (round > 0 && ctx.args.maxRounds !== undefined && round % ctx.args.maxRounds === 0) {
+                ctx.log(`APPROVAL REQUIRED: round-limit:${round}\n` +
+                    JSON.stringify({ round, completed: [...completed.values()], pending, audit: lastAudit }) +
+                    `\nResume run ${ctx.runId} only after explicit user approval for the next ` +
+                    `${ctx.args.maxRounds} rounds. Do not auto-resume.`);
+                await ctx.pause(`round-limit-v1:${round}`);
+                checkpointFingerprint = lastFingerprint;
+            }
             round++;
             const result = await ctx.step(`round-v1:${round}`, async () => {
                 const before = await snapshot(scope);
+                if (checkpointFingerprint !== null && before.fingerprint !== checkpointFingerprint) {
+                    return { blocked: true, phase: "Audit", report: lastAudit, verified: [],
+                        reason: "Scope changed at the round checkpoint; start a new run." };
+                }
                 const verified = [];
                 const repairs = [];
                 for (const item of pending) {
@@ -237,10 +256,12 @@ export const exhaustiveTask = {
             for (const entry of result.verified) completed.set(entry.item.id, entry);
             if (result.blocked) {
                 pending = pending.filter((item) => !result.verified.some((entry) => entry.item.id === item.id));
-                return stop(result.phase, `Item ${result.item.id} lacks a usable evidenced report.`, result.report);
+                return stop(result.phase, result.reason ??
+                    `Item ${result.item.id} lacks a usable evidenced report.`, result.report);
             }
             const { report, state, after, before } = result;
             lastAudit = report;
+            lastFingerprint = after.fingerprint;
             if (!evidenced(report) || !validItems(report.items) || !covers(report.coverage, state.files)) {
                 return stop("Audit", "Audit did not evidence full scope coverage.", report);
             }
