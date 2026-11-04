@@ -40,6 +40,9 @@ const inventorySchema = reportSchema({
 const verificationSchema = reportSchema({
     complete: { type: "boolean" }, remaining: text,
 });
+const commitSchema = reportSchema({
+    outcome: { type: "string", enum: ["committed", "unchanged"] }, commit: text,
+});
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
 const evidenced = (report) => report?.status === "ready" && nonempty(report.summary) &&
     Array.isArray(report.evidence) && report.evidence.length > 0 && report.evidence.every(nonempty) &&
@@ -49,6 +52,9 @@ const evidenced = (report) => report?.status === "ready" && nonempty(report.summ
         ["passed", "failed", "not-run"].includes(check.outcome));
 const passing = (report) => evidenced(report) && report.checks.length > 0 &&
     report.checks.every((check) => check.outcome === "passed");
+const saved = (report) => passing(report) &&
+    ((report.outcome === "committed" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(report.commit)) ||
+        (report.outcome === "unchanged" && report.commit === ""));
 const validItems = (items) => Array.isArray(items) &&
     items.every((item) => item && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.id) &&
         ["id", "title", "instruction", "acceptance"].every((key) => nonempty(item[key]))) &&
@@ -69,6 +75,9 @@ async function prepareScope(args) {
     if (args.maxRounds !== undefined && (!Number.isSafeInteger(args.maxRounds) || args.maxRounds < 1)) {
         throw new Error("maxRounds must be a positive safe integer when supplied.");
     }
+    if (!nonempty(args.baselinePath)) {
+        throw new Error("baselinePath is required: record the pre-edit worktree and index baseline in the main session.");
+    }
     const root = await realpath(process.cwd());
     const { stdout } = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: root });
     if (await realpath(stdout.trim()) !== root) throw new Error("Run from the worktree root.");
@@ -79,7 +88,9 @@ async function prepareScope(args) {
         }
         return path.split(sep).join("/");
     });
-    return { root, scope: [...new Set(scope)] };
+    const baseline = { path: resolve(root, args.baselinePath), content: await readFile(args.baselinePath, "utf8") };
+    if (!nonempty(baseline.content)) throw new Error("baselinePath must contain the pre-edit baseline.");
+    return { root, scope: [...new Set(scope)], baseline };
 }
 
 async function snapshot({ root, scope }) {
@@ -114,7 +125,15 @@ Stay within the supplied goal, acceptance criteria and scope. Preserve existing 
 inspect git status, git diff and git diff --cached before editing. If they conflict, return blocked.
 Do not delegate, run nested workflows, ask_user, or wait for human input. Return concrete questions
 for the main conversation. Never invent approvals, evidence, successful checks or completion.
-Do not stage, commit, push, merge, deploy, stash, reset, change branches or bypass permissions.
+Only Commit agents may stage and commit, after independent verification. All other roles preserve
+the index. Keep commits on the current non-default feature branch/worktree. Do not push, merge,
+deploy, stash, amend, rewrite branch history, change branches or bypass permissions/hooks.
+Only Work agents may undo their own edits to explicitly named scoped files after inspecting the
+diff and confirming the pre-edit baseline and chosen save point. Preserve all pre-existing work;
+use a reverse patch when file-level restoration would discard it. Never use branch-wide reset,
+git reset --hard, or blindly restore/checkout files from the default branch. An index-only per-file
+reset is not a worktree rollback; preserve unrelated staged entries. Ask the main conversation
+for an explicit decision before discarding user edits, undoing committed work, or uncertain recovery.
 Do not change remote systems or external resources.
 Stop for ambiguous requirements, unavailable required checks, unsafe edits or new high-risk decisions.
 Only Work agents may edit scoped files, including requested documentation outputs. Other agents are
@@ -134,14 +153,19 @@ export const exhaustiveTask = {
         description: "Exhaust a scoped repository task: discover items, sequentially work and independently " +
             "verify each, then re-inventory the entire scope until no work remains. Blocks on missing " +
             "evidence, human decisions or no progress; never reports partial work as complete. " +
-            "args: { goal: string, scope: string[], acceptance: string, maxRounds?: number }. " +
+            "Use the exhaustive-task coordinator skill for preparation and human decisions. " +
+            "args: { goal: string, scope: string[], acceptance: string, baselinePath: string, maxRounds?: number }. " +
             "maxRounds pauses after each batch of that many rounds; explicit approval is required " +
             "before resuming the same run. Scope paths are relative to " +
-            "the worktree root; use [\".\"] for the repository. No commits or external changes.",
-        phases: ["Inventory", "Work", "Verify", "Audit"].map((title) => ({ title })),
+            "the worktree root; use [\".\"] for the repository. Commits verified items; no external changes. " +
+            "Requires installed agent-skills:git-workflow-and-versioning.",
+        phases: ["Inventory", "Work", "Verify", "Commit", "Audit"].map((title) => ({ title })),
         argsSchema: {
-            type: "object", required: ["goal", "scope", "acceptance"],
-            properties: { goal: text, scope: strings, acceptance: text, maxRounds: { type: "integer" } },
+            type: "object", required: ["goal", "scope", "acceptance", "baselinePath"],
+            properties: {
+                goal: text, scope: strings, acceptance: text, baselinePath: text,
+                maxRounds: { type: "integer" },
+            },
         },
     },
     run: async (ctx) => {
@@ -166,6 +190,10 @@ export const exhaustiveTask = {
                 JSON.stringify({ ...ctx.args, ...context }),
             { label, schema },
         );
+        const baseline = await ctx.step("baseline-v1", () => scope.baseline);
+        if (baseline.path !== scope.baseline.path || baseline.content !== scope.baseline.content) {
+            return stop("Inventory", "Baseline changed since this run started; start a new run with reviewed ownership.");
+        }
         const inventoryInstruction = "Read-only: exhaustively inspect the full current file manifest, " +
             "not a sample or only previous findings. Find ALL remaining work required by the original " +
             "goal and acceptance, including missed integrations, indirect references and incomplete " +
@@ -235,8 +263,40 @@ export const exhaustiveTask = {
                             !nonempty(verification.remaining))) {
                         return { blocked: true, phase: "Verify", report: verification, item, verified };
                     }
-                    if (verification.complete) verified.push({ item: known.get(item.id), work, verification });
-                    else repairs.push({ ...known.get(item.id), repair: verification.remaining });
+                    if ((await snapshot(scope)).fingerprint !== current.fingerprint) {
+                        return { blocked: true, phase: "Verify", report: verification, item, verified,
+                            reason: "Scope changed during read-only verification; verification is stale." };
+                    }
+                    if (verification.complete) {
+                        ctx.phase("Commit");
+                        const commit = await call(`Commit:${round}:${item.id}:${current.fingerprint}`,
+                            "Load agent-skills:git-workflow-and-versioning; return blocked with recovery " +
+                            "steps if unavailable. Create an atomic save point for this independently " +
+                            "verified item only. Read baselinePath, git status --porcelain, git diff and " +
+                            "git diff --cached, and inspect any untracked item content. Compare with the " +
+                            "original baseline and earlier save points; preserve unrelated user edits " +
+                            "and staged entries, including in the same file. Do not edit source, docs " +
+                            "or the baseline. Stage only owned item hunks, never git add -A or commit " +
+                            "the whole index blindly. Inspect the exact staged assignment diff for " +
+                            "scope and secrets. Follow repository message conventions and attribution " +
+                            "trailers. Verify the full commit object ID, reachability from HEAD and " +
+                            "exact committed contents with actual Git checks. Return outcome committed " +
+                            "and its full ID; reuse an existing exact reachable save point after an " +
+                            "interruption rather than duplicate it. If this item needed no changes, " +
+                            "return outcome unchanged, commit \"\", and passing evidence that no owned " +
+                            "item diff remains. Never make an empty commit or claim unchanged when " +
+                            "owned item edits still need saving. Missing baseline, unsafe isolation, " +
+                            "default/detached branch or denied/failed commits mean blocked, not skipped.",
+                            {
+                                ...context, work, verification,
+                                completed: [...completed.values(), ...verified],
+                            }, commitSchema);
+                        if (!saved(commit) || (await snapshot(scope)).fingerprint !== current.fingerprint) {
+                            return { blocked: true, phase: "Commit", report: commit, item, verified,
+                                reason: `Item ${item.id} has no verified save point or scoped content changed during commit.` };
+                        }
+                        verified.push({ item: known.get(item.id), work, verification, commit });
+                    } else repairs.push({ ...known.get(item.id), repair: verification.remaining });
                 }
                 ctx.phase("Audit");
                 const state = await snapshot(scope);

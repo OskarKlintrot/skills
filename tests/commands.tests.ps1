@@ -18,7 +18,7 @@ $skills = [ordered]@{
 }
 $failures = 0
 $descriptions = @{}
-$packagedSkills = @('addy-lifecycle', 'git-conventions', 'readme-conventions')
+$packagedSkills = @('addy-lifecycle', 'exhaustive-task', 'git-conventions', 'readme-conventions')
 $packagedAgents = @('code-reviewer', 'security-auditor', 'test-engineer', 'web-performance-auditor')
 
 function Assert-Check([string]$Name, [bool]$Condition) {
@@ -42,7 +42,7 @@ Assert-Check 'Exactly the ten documented commands are packaged' (
     -not (Compare-Object @($skills.Keys) @($files.BaseName))
 )
 $skillDirectories = @(Get-ChildItem -LiteralPath (Join-Path $root 'skills') -Directory)
-Assert-Check 'Packaged skills contain the lifecycle coordinator and conventions skills' (
+Assert-Check 'Packaged skills contain both workflow coordinators and conventions skills' (
     -not (Compare-Object $packagedSkills @($skillDirectories.Name))
 )
 $agentDirectory = Join-Path $root 'com.github.copilot' 'agents'
@@ -136,6 +136,25 @@ Assert-Check 'Lifecycle requires approved atomic commits with an explicit baseli
     $lifecycle -notmatch 'leaves all changes uncommitted|Do not commit, push'
 )
 
+$exhaustive = Get-Content -LiteralPath (Join-Path $root 'skills' 'exhaustive-task' 'SKILL.md') -Raw
+Assert-Check 'Exhaustive task skill starts its workflow after scope, round ceiling and launch approval' (
+    $exhaustive -match '\A---\r?\nname: exhaustive-task\r?\ndescription: [^\r\n]+' -and
+    $exhaustive.Contains('run the `exhaustive-task` dynamic workflow') -and
+    $exhaustive.Contains('ask the user with `ask_user` whether to use a round ceiling') -and
+    $exhaustive.Contains('Never invent a default.') -and
+    $exhaustive.Contains('explicit launch') -and
+    $exhaustive.Contains('Never auto-resume.')
+)
+Assert-Check 'Exhaustive task coordinator protects ownership and routes human decisions' (
+    $exhaustive.Contains('agent-skills:git-workflow-and-versioning') -and
+    $exhaustive.Contains('"baselinePath"') -and
+    $exhaustive.Contains('git diff --cached') -and
+    $exhaustive.Contains('`needsInput`') -and
+    $exhaustive.Contains('original ownership baseline') -and
+    $exhaustive.Contains('reverse patch') -and
+    $exhaustive.Contains('default branch')
+)
+
 if ($failures) { throw "$failures command checks failed." }
 if (-not $Runtime) { return }
 
@@ -155,6 +174,9 @@ try {
     $installedSkills = & copilot skill list 2>&1
     Assert-Check 'Installed plugin discovers the addy-lifecycle skill' (
         $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('addy-lifecycle')
+    )
+    Assert-Check 'Installed plugin discovers the exhaustive-task skill' (
+        $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('exhaustive-task')
     )
     $workflowOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run addy-lifecycle --args '{"goal":"A goal without a prepared spec"}' 2>&1
     Assert-Check 'Installed lifecycle workflow loads and enforces its argument schema' (

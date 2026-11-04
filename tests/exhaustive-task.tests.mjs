@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { test } from "node:test";
 import { exhaustiveTask } from "../com.github.copilot/extensions/exhaustive-task/workflow.mjs";
@@ -14,10 +14,15 @@ const report = (extra = {}) => ({
 });
 const inventory = (items = [], extra = {}) => report({ items, ...extra });
 const verification = (extra = {}) => report({ complete: true, remaining: "", ...extra });
+const receipt = (extra = {}) => report({ outcome: "committed", commit: "a".repeat(40), ...extra });
 
 async function fixture(t) {
-    const directory = await mkdtemp(resolve("tests", "exhaustive-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const root = await mkdtemp(resolve("tests", "exhaustive-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const directory = join(root, "scope");
+    await mkdir(directory);
+    const baselinePath = join(root, "baseline.txt");
+    await writeFile(baselinePath, "Simulated pre-edit baseline: output.txt is untracked with initial content.\n");
     const path = join(directory, "output.txt");
     await writeFile(path, "initial\n");
     return {
@@ -25,15 +30,18 @@ async function fixture(t) {
         args: {
             goal: "Document every integration", scope: [relative(process.cwd(), directory)],
             acceptance: "All scoped integrations have accurate documentation",
+            baselinePath,
         },
     };
 }
 
-function harness(f, responses) {
+function harness(f, responses, commitResponse = receipt()) {
     const journal = new Map();
     const calls = [];
     const logs = [];
     const checkpoints = new Set();
+    const commitCalls = [];
+    const events = [];
     const ctx = {
         args: f.args, runId: "test-run",
         log: (message) => logs.push(message),
@@ -51,11 +59,19 @@ function harness(f, responses) {
         async agent(prompt, options) {
             const key = JSON.stringify({ prompt, options });
             if (journal.has(key)) return journal.get(key);
+            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
+            const call = { prompt, ...options, context };
+            events.push(call);
+            if (options.label.startsWith("Commit:")) {
+                commitCalls.push(call);
+                const output = typeof commitResponse === "function" ? await commitResponse(context) : commitResponse;
+                journal.set(key, output);
+                return output;
+            }
             const response = responses[calls.length];
             assert.ok(response, `Unexpected agent: ${options.label}`);
             assert.ok(options.label.startsWith(response[0]), `${options.label} should start with ${response[0]}`);
-            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
-            calls.push({ prompt, ...options, context });
+            calls.push(call);
             const answer = typeof response[1] === "function" ? await response[1](context) : response[1];
             const output = answer && Object.hasOwn(answer, "items") && !Object.hasOwn(answer, "coverage")
                 ? { ...answer, coverage: context.manifest } : answer;
@@ -63,7 +79,7 @@ function harness(f, responses) {
             return output;
         },
     };
-    return { ctx, calls, logs };
+    return { ctx, calls, logs, commitCalls, events };
 }
 
 const work = (f, content) => async () => {
@@ -73,7 +89,7 @@ const work = (f, content) => async () => {
 
 test("registered workflow declares its contract without model or resource overrides", () => {
     assert.equal(exhaustiveTask.meta.name, "exhaustive-task");
-    assert.deepEqual(exhaustiveTask.meta.argsSchema.required, ["goal", "scope", "acceptance"]);
+    assert.deepEqual(exhaustiveTask.meta.argsSchema.required, ["goal", "scope", "acceptance", "baselinePath"]);
     assert.equal(exhaustiveTask.meta.limits, undefined);
 });
 
@@ -83,6 +99,35 @@ test("invalid optional round ceilings fail before agents are spawned", async (t)
         const h = harness({ args: { ...f.args, maxRounds } }, []);
         await assert.rejects(() => exhaustiveTask.run(h.ctx), /maxRounds/);
         assert.equal(h.calls.length, 0);
+    }
+});
+
+test("baseline is required, readable, nonempty and immutable across runtime resume", async (t) => {
+    const f = await fixture(t);
+    for (const baselinePath of [undefined, "", join(f.directory, "missing-baseline.txt"), f.directory]) {
+        const h = harness({ args: { ...f.args, baselinePath } }, []);
+        await assert.rejects(() => exhaustiveTask.run(h.ctx), /baselinePath|ENOENT|EISDIR/);
+        assert.equal(h.calls.length, 0);
+    }
+    await writeFile(f.args.baselinePath, " ");
+    const empty = harness(f, []);
+    await assert.rejects(() => exhaustiveTask.run(empty.ctx), /baselinePath/);
+    await writeFile(f.args.baselinePath, "Original baseline\n");
+    const h = harness(f, [["Inventory:0", inventory()], ["Audit:1:", inventory()]]);
+    assert.equal((await exhaustiveTask.run(h.ctx)).status, "complete");
+    await writeFile(f.args.baselinePath, "Reclassified ownership\n");
+    const changed = await exhaustiveTask.run(h.ctx);
+    assert.equal(changed.status, "blocked");
+    assert.match(changed.reason, /Baseline changed/);
+    assert.equal(h.calls.length, 2);
+});
+
+test("scope escape validation runs with otherwise valid arguments", async (t) => {
+    const f = await fixture(t);
+    for (const scope of [[".."], [resolve(".")], [".git"], [".git\\config"]]) {
+        const h = harness({ args: { ...f.args, scope } }, []);
+        await assert.rejects(() => exhaustiveTask.run(h.ctx), /scope paths/);
+        assert.equal(h.events.length, 0);
     }
 });
 
@@ -141,7 +186,7 @@ test("invalid arguments and paths are rejected before any model calls", async ()
         { goal: "goal", acceptance: "done", scope: [".git"] },
     ]) {
         const h = harness({ args }, []);
-        await assert.rejects(() => exhaustiveTask.run(h.ctx), /goal|acceptance|scope/);
+        await assert.rejects(() => exhaustiveTask.run(h.ctx), /goal|acceptance|scope|baselinePath/);
         assert.equal(h.calls.length, 0);
     }
 });
@@ -183,8 +228,84 @@ test("work is sequential and each item is verified before the next worker", asyn
     for (const call of h.calls) {
         assert.match(call.prompt, /Do not delegate/);
         assert.match(call.prompt, /Only Work agents may edit/);
-        assert.match(call.prompt, /Do not stage, commit/);
+        assert.match(call.prompt, /Only Commit agents may stage and commit/);
     }
+    assert.deepEqual(h.events.map((call) => call.label.split(":")[0]), [
+        "Inventory", "Work", "Verify", "Commit", "Work", "Verify", "Commit", "Audit",
+    ]);
+    assert.equal(h.commitCalls.length, 2);
+    for (const call of h.commitCalls) {
+        assert.match(call.prompt, /agent-skills:git-workflow-and-versioning/);
+        assert.match(call.prompt, /never git add -A/);
+        assert.match(call.prompt, /original baseline and earlier save points/);
+        assert.equal(call.context.baselinePath, f.args.baselinePath);
+    }
+});
+
+test("missing, failed or unevidenced commit receipts stop before the next item and audit", async (t) => {
+    const f = await fixture(t);
+    for (const commit of [
+        null, receipt({ commit: "short" }), receipt({ checks: [] }),
+        receipt({ checks: [{ ...check, outcome: "failed" }] }),
+        receipt({ questions: ["May these overlapping staged changes be included?"] }),
+        receipt({ status: "blocked" }), receipt({ outcome: "unchanged" }),
+    ]) {
+        const h = harness(f, [
+            ["Inventory:0", inventory([a, b])],
+            ["Work:1:", report()], ["Verify:1:", verification()],
+        ], commit);
+        const result = await exhaustiveTask.run(h.ctx);
+        assert.equal(result.status, "blocked");
+        assert.equal(result.phase, "Commit");
+        assert.equal(result.completed.length, 0);
+        assert.deepEqual(result.pending, [a, b]);
+        assert.deepEqual(result.needsInput, commit?.questions ?? []);
+        assert.equal(h.calls.length, 3);
+    }
+});
+
+test("evidenced unchanged items do not require an empty commit", async (t) => {
+    const f = await fixture(t);
+    const h = harness(f, [
+        ["Inventory:0", inventory([a])], ["Work:1:", report()],
+        ["Verify:1:", verification()], ["Audit:1:", inventory()],
+    ], receipt({ outcome: "unchanged", commit: "" }));
+    const result = await exhaustiveTask.run(h.ctx);
+    assert.equal(result.status, "complete");
+    assert.equal(result.completed[0].commit.outcome, "unchanged");
+});
+
+test("incomplete item verification never invokes the commit agent", async (t) => {
+    const f = await fixture(t);
+    const h = harness(f, [
+        ["Inventory:0", inventory([a])], ["Work:1:", report()],
+        ["Verify:1:", verification({ complete: false, remaining: "Still missing" })],
+        ["Audit:1:", inventory([a])],
+    ]);
+    assert.equal((await exhaustiveTask.run(h.ctx)).status, "blocked");
+    assert.equal(h.commitCalls.length, 0);
+});
+
+test("verifier or commit-agent content edits invalidate the save point", async (t) => {
+    const f = await fixture(t);
+    const verifier = harness(f, [
+        ["Inventory:0", inventory([a])], ["Work:1:", report()],
+        ["Verify:1:", async () => {
+            await writeFile(f.path, "verifier edit\n");
+            return verification();
+        }],
+    ]);
+    assert.equal((await exhaustiveTask.run(verifier.ctx)).phase, "Verify");
+    assert.equal(verifier.commitCalls.length, 0);
+    const committer = harness(f, [
+        ["Inventory:0", inventory([a])], ["Work:1:", report()], ["Verify:1:", verification()],
+    ], async () => {
+        await writeFile(f.path, "commit agent edit\n");
+        return receipt();
+    });
+    const result = await exhaustiveTask.run(committer.ctx);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.phase, "Commit");
 });
 
 test("a verifier's repair remains queued even when the audit incorrectly returns no items", async (t) => {
