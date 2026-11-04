@@ -312,7 +312,9 @@ function apply(state, result, run) {
             newLocations += added.length;
             existing.locations.push(...added);
             // Repairs requested by verification restate the whole finding; other rounds only add locations.
-            if (result.replace) Object.assign(existing, { title: finding.title, details: finding.details });
+            if (result.replace?.includes(finding.id)) {
+                Object.assign(existing, { title: finding.title, details: finding.details, locations: [...finding.locations] });
+            }
         } else state.findings.push(structuredClone(finding));
     }
     if (result.batch) state.processed.push(...result.batch);
@@ -341,8 +343,8 @@ Stop as blocked for ambiguous requirements, unavailable required checks or new h
 Finding IDs are stable semantic kebab-case IDs. When something already exists in ledger.findings,
 reuse its ID (adding locations) instead of creating a duplicate. Never re-add IDs in rejectedFindings:
 verification found them inaccurate. When repair is supplied, ledger.findings includes details; to correct
-an existing finding, return it with the same ID and its complete corrected title and details, which then
-replace the ledger entry.
+an existing finding, return it with the same ID and its complete corrected title, locations and details,
+which then replace the ledger entry. Omit findings you are not correcting.
 `;
 
 const unitInstruction = "Process every unit in batch completely against the goal and acceptance: read each " +
@@ -560,6 +562,7 @@ export const exhaustiveTask = {
                 let verification = null;
                 let fix = null;
                 const refused = new Set();
+                const corrected = new Set();
                 for (let attempt = 1; ; attempt++) {
                     ctx.phase("Work");
                     fix = verification?.remaining ?? (batch ? null : repair);
@@ -574,15 +577,13 @@ export const exhaustiveTask = {
                         return blocked("Work", batch ? "Work report is blocked, unevidenced or does not cover " +
                             "exactly the batch." : "Review report is blocked, unevidenced or lacks a strategy.", work);
                     }
+                    if (fix !== null) for (const entry of work.findings) corrected.add(entry.id);
                     if (previous) {
                         // Repair attempts often report only what they fixed; keep what earlier attempts found.
+                        // A restated finding replaces the earlier one whole, so repairs can drop wrong locations.
                         const merged = new Map(previous.findings.filter((entry) => !refused.has(entry.id))
                             .map((entry) => [entry.id, entry]));
-                        for (const entry of work.findings) {
-                            const earlier = merged.get(entry.id);
-                            merged.set(entry.id, earlier
-                                ? { ...entry, locations: [...new Set([...earlier.locations, ...entry.locations])] } : entry);
-                        }
+                        for (const entry of work.findings) merged.set(entry.id, entry);
                         work = { ...work, findings: [...merged.values()],
                             changes: [...new Set([...previous.changes, ...work.changes])] };
                     }
@@ -612,7 +613,7 @@ export const exhaustiveTask = {
                 }
                 const outcome = {
                     round, batch, strategy: work.strategy, changes: work.changes, summary: work.summary,
-                    replace: fix !== null, rejected: [...refused],
+                    replace: [...corrected], rejected: [...refused],
                     findings: work.findings.filter((finding) => !refused.has(finding.id) && !rejected.includes(finding.id)),
                     commits: [],
                 };

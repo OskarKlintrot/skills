@@ -438,7 +438,7 @@ test("a blocked commit leaves the batch unprocessed for the next run", async (t)
     assert.deepEqual(next.calls[0].context.batch, ["src/a.txt"]);
 });
 
-test("verification repairs replace a finding's title and details", async (t) => {
+test("verification repairs replace a finding's title, locations and details", async (t) => {
     const root = await temp(t);
     const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
     let finals = 0;
@@ -450,13 +450,13 @@ test("verification repairs replace a finding's title and details", async (t) => 
             if (round === 1) return work([], [finding("sdk", "a.cs:1")], [], "grep");
             if (!context.repair) return undefined;
             assert.equal(context.ledger.findings[0].details, "Details sdk");
-            return work([], [{ id: "sdk", title: "Corrected", locations: ["a.cs:1"], details: "Corrected details" }], [], "repair");
+            return work([], [{ id: "sdk", title: "Corrected", locations: ["b.cs:9"], details: "Corrected details" }], [], "repair");
         },
         Final: () => finals++ ? undefined : report({ complete: false, remaining: "sdk is mislabeled", rejected: [] }),
     }));
     const result = await h.run();
     assert.equal(result.status, "complete");
-    assert.deepEqual(result.findings, [{ id: "sdk", title: "Corrected", locations: ["a.cs:1"], details: "Corrected details" }]);
+    assert.deepEqual(result.findings, [{ id: "sdk", title: "Corrected", locations: ["b.cs:9"], details: "Corrected details" }]);
     assert.match(await readFile(join(root, "ledger.md"), "utf8"), /Corrected details/);
 });
 
@@ -613,7 +613,7 @@ test("repair attempts keep findings and changes from earlier attempts", async (t
         Work: async ({ context, attempt }) => {
             if (!context.batch.length) return undefined;
             await writeFile(join(f.path, "src", "a.txt"), `cleaned ${attempt}\n`);
-            return attempt === 1 ? work(context.batch, [finding("hit", "src/a.txt:1")], ["src/a.txt: cleaned"])
+            return attempt === 1 ? work(context.batch, [finding("hit", "src/a.txt:1"), finding("other", "src/a.txt:3")], ["src/a.txt: cleaned"])
                 : work(context.batch, [finding("hit", "src/a.txt:2")], ["src/a.txt: test fixed"]);
         },
         Verify: ({ attempt, context }) => {
@@ -628,6 +628,6 @@ test("repair attempts keep findings and changes from earlier attempts", async (t
     }));
     const result = await h.run();
     assert.equal(result.status, "complete");
-    assert.deepEqual(result.findings[0].locations, ["src/a.txt:1", "src/a.txt:2"]);
+    assert.deepEqual(result.findings.map((entry) => [entry.id, entry.locations]), [["hit", ["src/a.txt:2"]], ["other", ["src/a.txt:3"]]]);
     assert.match(await readFile(f.args.ledgerPath, "utf8"), /cleaned[\s\S]*test fixed/);
 });
