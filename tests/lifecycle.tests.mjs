@@ -61,6 +61,7 @@ function harness(overrides = {}, args = { goal: "Build a feature" }) {
             return value;
         },
         async pause(key) {
+            if (key.startsWith("needs-input:")) return;
             if (!checkpoints.has(key)) {
                 checkpoints.add(key);
                 throw new Error(`PAUSED:${key}`);
@@ -245,6 +246,61 @@ test("Define rejects staged-only edits to initially clean tracked content", asyn
         const result = await lifecycle.run(h.ctx);
         assert.equal(result.verdict, "NO-GO");
         assert.match(result.reason, /outside its assigned spec/);
+    });
+});
+
+test("clarification remains paused until feedback produces a spec in the same run", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
+            if (options.label === "Define" && !context.revisions.define) {
+                return report({ status: "blocked", specPath: "", questions: ["Which scope?"] });
+            }
+            return agent(prompt, options);
+        };
+        const pause = h.ctx.pause;
+        h.ctx.pause = async (key) => {
+            if (key.startsWith("needs-input:")) throw new Error(`PAUSED:${key}`);
+            return pause(key);
+        };
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:needs-input:/);
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:needs-input:/);
+        assert.ok(h.logs.some((entry) => entry.includes("Which scope?")));
+        const request = h.logs.find((entry) => entry.startsWith("RECOVERY REQUIRED:"))
+            .split("update ")[1].split(" with ")[0];
+        await mkdir("tasks");
+        await writeFile(request, JSON.stringify({ define: "Only the core scope" }));
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-spec:/);
+    });
+});
+
+test("Define detects overwrites inside a pre-existing dirty submodule", async () => {
+    await inRepository(async (directory, git) => {
+        const source = join(directory, "module-source");
+        await mkdir(source);
+        const nestedGit = (...args) => execFileSync("git", args, { cwd: source, stdio: "pipe" });
+        nestedGit("init");
+        await writeFile(join(source, "source.txt"), "Initial module content");
+        nestedGit("add", "source.txt");
+        nestedGit("-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "-m", "docs: Add module");
+        git("-c", "protocol.file.allow=always", "submodule", "add", source, "module");
+        git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "-m", "build: Add submodule");
+        await rm(source, { recursive: true, force: true });
+        await writeFile(join("module", "source.txt"), "User's unfinished module changes");
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            if (options.label === "Define") await writeFile(join("module", "source.txt"), "Overwritten");
+            return result;
+        };
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.match(result.reason, /pre-existing work/);
     });
 });
 

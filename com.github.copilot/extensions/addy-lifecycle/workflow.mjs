@@ -77,6 +77,7 @@ function currentHead(root = worktreeRoot()) {
 
 async function pathState(path, root = worktreeRoot()) {
     const absolute = resolve(root, path);
+    const index = gitPaths(["--literal-pathspecs", "ls-files", "--stage", "-z", "--", path], root);
     let worktree;
     try {
         const stat = await lstat(absolute);
@@ -87,7 +88,18 @@ async function pathState(path, root = worktreeRoot()) {
         if (error.code !== "ENOENT") throw error;
         worktree = null;
     }
-    return { path, worktree, index: gitPaths(["--literal-pathspecs", "ls-files", "--stage", "-z", "--", path], root) };
+    if (worktree?.directory && index.some((entry) => entry.startsWith("160000 "))) {
+        const nestedRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+            cwd: absolute, encoding: "utf8",
+        }).trimEnd();
+        if (resolve(nestedRoot) === absolute) {
+            const paths = [...new Set(gitPaths(["ls-files", "--cached", "--others",
+                "--exclude-standard", "-z"], absolute))].sort();
+            worktree = { ...worktree, head: currentHead(absolute),
+                files: await Promise.all(paths.map((entry) => pathState(entry, absolute))) };
+        }
+    }
+    return { path, worktree, index };
 }
 
 async function captureBaseline() {
@@ -179,7 +191,7 @@ async function revisionGeneration(ctx, revisions) {
                     Number(define !== previous.define || plan !== previous.plan),
             };
         });
-        if (appended) return next;
+        if (appended) return { ...next, attempt };
         previous = next;
     }
 }
@@ -319,12 +331,15 @@ export const lifecycle = {
     run: async (ctx) => {
         if (!nonempty(ctx.args?.goal)) throw new Error("goal must be a non-empty string.");
         const reports = {};
-        const stop = (phase, reason) => {
+        const stop = async (phase, reason) => {
             const needsInput = Object.entries(reports).flatMap(([label, report]) =>
                 (Array.isArray(report?.questions) ? report.questions : [])
                     .filter(nonempty).map((question) => ({ phase: label, question })));
             ctx.log(`NO-GO at ${phase}: ${reason}`);
             if (needsInput.length) ctx.log(`MAIN SESSION INPUT REQUIRED: ${JSON.stringify(needsInput)}`);
+            ctx.log(`RECOVERY REQUIRED: update ${revisionPath} with define and/or plan feedback ` +
+                `and resume run ${ctx.runId}; do not start a replacement run over these artifacts.`);
+            await ctx.pause(`needs-input:${generations.attempt}:${phase}`);
             return { verdict: "NO-GO", phase, reason, needsInput, reports };
         };
         let baseline;
