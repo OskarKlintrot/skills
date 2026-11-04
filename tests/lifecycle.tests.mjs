@@ -321,6 +321,10 @@ test("a blocked initial Define cannot hide unauthorized edits behind later feedb
         };
         const initial = await lifecycle.run(h.ctx);
         assert.match(initial.reason, /outside its assigned spec/);
+        const recovery = h.logs.find((entry) => entry.startsWith("RECOVERY REQUIRED:"));
+        assert.match(recovery, /do not resume this permanently blocked run/);
+        assert.match(recovery, /restore unauthorized changes, then deliberately start a clean run/);
+        assert.doesNotMatch(recovery, /do not start a replacement run/);
         const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
         await mkdir("tasks");
         await writeFile(context.revisionRequestPath, JSON.stringify({ define: "Only the core scope" }));
@@ -356,6 +360,7 @@ test("a blocked spec revision cannot carry unauthorized edits into another gener
         assert.equal(retried.verdict, "NO-GO");
         assert.match(retried.reason, /prior Define attempt violated/);
         assert.equal(h.calls.filter((call) => call.label === "Define").length, 2);
+        assert.match(h.logs.at(-1), /start a clean run/);
     });
 });
 

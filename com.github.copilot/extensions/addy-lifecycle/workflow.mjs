@@ -344,13 +344,17 @@ export const lifecycle = {
     run: async (ctx) => {
         if (!nonempty(ctx.args?.goal)) throw new Error("goal must be a non-empty string.");
         const reports = {};
-        const stop = async (phase, reason) => {
+        const stop = async (phase, reason, requiresCleanRun = false) => {
             const needsInput = Object.entries(reports).flatMap(([label, report]) =>
                 (Array.isArray(report?.questions) ? report.questions : [])
                     .filter(nonempty).map((question) => ({ phase: label, question })));
             ctx.log(`NO-GO at ${phase}: ${reason}`);
             if (needsInput.length) ctx.log(`MAIN SESSION INPUT REQUIRED: ${JSON.stringify(needsInput)}`);
-            ctx.log(`RECOVERY REQUIRED: update ${revisionPath} with define and/or plan feedback ` +
+            ctx.log(requiresCleanRun ?
+                "RECOVERY REQUIRED: do not resume this permanently blocked run. Inspect and preserve " +
+                "the user's work, restore unauthorized changes, then deliberately start a clean run. " +
+                "Do not discard unrelated user edits or adopt unauthorized artifacts." :
+                `RECOVERY REQUIRED: update ${revisionPath} with define and/or plan feedback ` +
                 `and resume run ${ctx.runId}; do not start a replacement run over these artifacts.`);
             await ctx.pause(`needs-input:${generations.attempt}:${phase}`);
             return { verdict: "NO-GO", phase, reason, needsInput, reports };
@@ -393,7 +397,7 @@ export const lifecycle = {
         const protectedRevisionPath = baseline.protectedState.some(({ path }) => path.replaceAll("\\", "/") ===
             relative(worktreeRoot(), resolve(worktreeRoot(), revisionPath)).replaceAll("\\", "/"));
         if (protectedRevisionPath) {
-            return stop("Define", "revisionPath overlaps pre-existing work; choose a new request path.");
+            return stop("Define", "revisionPath overlaps pre-existing work; choose a new request path.", true);
         }
         const beforeDefine = await ctx.step(`before-define-v2:${specRevision}`, captureBaseline);
         const defineInstruction =
@@ -439,7 +443,7 @@ export const lifecycle = {
         if (initialSafety) {
             reports.Define = { ...initialSpec,
                 questions: [`${initialSafety} Restore affected paths outside the spec before continuing.`] };
-            return stop("Define", initialSafety);
+            return stop("Define", initialSafety, true);
         }
         for (let generation = 0; generation < generations.specGeneration; generation++) {
             const key = generation ? String(generation) : "";
@@ -447,7 +451,7 @@ export const lifecycle = {
             const protectedChanges = await ctx.step(`define-protected-state:${key}`, () => []);
             const paths = await ctx.step(`define-path-observation-v3:${key}`, () => null);
             if (headChanged || protectedChanges.length || paths?.error) {
-                return stop("Define", "A prior Define attempt violated worktree safety; inspect and restore the worktree before starting a clean run.");
+                return stop("Define", "A prior Define attempt violated worktree safety; inspect and restore the worktree before starting a clean run.", true);
             }
         }
         const missingInitialSpec = await ctx.step(`initial-spec-validity-v1:${specRevision}`, async () =>
@@ -470,7 +474,7 @@ export const lifecycle = {
                 return { sourcePath: source.path, revisionTarget, occupied: tracked && occupied };
             }) : null;
         if (specRevision && origin?.occupied) {
-            return stop("Define", "The workflow-owned spec revision path overlaps pre-existing work.");
+            return stop("Define", "The workflow-owned spec revision path overlaps pre-existing work.", true);
         }
         const spec = specRevision && !missingInitialSpec && origin ? await agent("Define", defineInstruction +
             " Use sourcePath as read-only reference. Write the revised specification only to " +
@@ -482,14 +486,14 @@ export const lifecycle = {
         const headChanged = await ctx.step(`define-head-observation-v1:${specRevision}`,
             () => currentHead(baseline.root) !== beforeDefine.head);
         if (headChanged) {
-            return stop("Define", "Define changed HEAD before specification approval.");
+            return stop("Define", "Define changed HEAD before specification approval.", true);
         }
         const protectedChanges = await ctx.step(`define-protected-state:${specRevision}`,
             () => changedProtectedPaths(baseline));
         if (protectedChanges.length) {
             reports.Define = { ...spec,
                 questions: [`Define changed pre-existing work: ${protectedChanges.join(", ")}. Restore it before continuing.`] };
-            return stop("Define", "Define changed pre-existing work.");
+            return stop("Define", "Define changed pre-existing work.", true);
         }
         const currentSpec = nonempty(spec?.specPath) ? await loadSpec(spec.specPath) :
             { error: "Define did not return a specPath." };
@@ -500,7 +504,7 @@ export const lifecycle = {
         ].map((path) => path.replaceAll("\\", "/")));
         if (dirtyBaselinePaths.has(specPathKey)) {
             spec.questions = [`The selected spec path ${currentSpec.path} already had uncommitted changes at workflow start. Choose a clean spec path or save those changes before continuing.`];
-            return stop("Define", "The spec overlaps pre-existing work.");
+            return stop("Define", "The spec overlaps pre-existing work.", true);
         }
         const definePaths = await ctx.step(`define-path-observation-v3:${specRevision}`, async () => {
             const changedTrackedPaths = [...new Set([
@@ -549,7 +553,7 @@ export const lifecycle = {
         }
         if (definePaths.error) {
             reports.Define = { ...spec, questions: [definePaths.question] };
-            return stop("Define", definePaths.error);
+            return stop("Define", definePaths.error, true);
         }
         if (!evidenced(spec)) return stop("Define", "Requirements unclear, spec missing, or Define blocked.");
         if (currentSpec.error) return stop("Define", currentSpec.error);
