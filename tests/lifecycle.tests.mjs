@@ -413,6 +413,31 @@ test("Define detects ignored clean and dirty submodule overwrites with batched i
     }
 });
 
+test("Define preserves file contents inside pre-existing untracked nested checkouts", async () => {
+    await inRepository(async (directory) => {
+        const nested = join(directory, "checkout");
+        await mkdir(nested);
+        const git = (...args) => execFileSync("git", args, { cwd: nested, stdio: "pipe" });
+        git("init");
+        await writeFile(join(nested, "source.txt"), "Original nested content");
+        git("add", "source.txt");
+        git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "-m", "docs: Add nested content");
+        await writeFile(join(nested, "source.txt"), "User's unfinished nested work");
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            if (options.label === "Define") await writeFile(join(nested, "source.txt"), "Overwritten");
+            return result;
+        };
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.match(result.reason, /pre-existing work/);
+        assert.equal(h.calls.some((call) => call.label === "Commit:spec"), false);
+    });
+});
+
 test("workers protect only dirty paths and omit the runtime tracked-file inventory", async () => {
     await inRepository(async () => {
         const h = generatedSpecHarness();

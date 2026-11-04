@@ -99,7 +99,7 @@ async function pathState(path, root = worktreeRoot(), indexEntries) {
         if (error.code !== "ENOENT") throw error;
         worktree = null;
     }
-    if (worktree?.directory && index.some((entry) => entry.startsWith("160000 "))) {
+    if (worktree?.directory) {
         const nestedRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
             cwd: absolute, encoding: "utf8",
         }).trimEnd();
