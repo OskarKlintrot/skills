@@ -176,11 +176,13 @@ async function prepare(args) {
             return path.split(sep).join("/");
         });
         const units = await manifest(root, [...new Set(scope)], ledgerPath);
+        // Processed units are repository-relative, so a ledger must not be reused for another repository.
+        const ledgerScope = [pathKey(root)];
         // A continued ledger may legitimately have deleted every scoped file in earlier rounds.
-        if (!units.length && !(await loadLedger(ledgerPath, args))?.processed.length) {
+        if (!units.length && !(await loadLedger(ledgerPath, args, ledgerScope))?.processed.length) {
             throw new Error("No tracked or non-ignored files match paths.");
         }
-        return { batchSize, quietRounds, maxRounds, ledgerPath, repos: [root], root, units };
+        return { batchSize, quietRounds, maxRounds, ledgerPath, scope: ledgerScope, repos: [root], root, units };
     }
     if (args.mode === "repos" && !paths.every(isAbsolute)) throw new Error("repos mode paths must be absolute.");
     const roots = paths.length ? paths.map((path) => resolve(path)) : [process.cwd()];
@@ -188,7 +190,9 @@ async function prepare(args) {
     for (const root of roots) await discover(root, 0, found);
     const repos = [...new Map(found.map((repo) => [pathKey(repo), repo])).values()].sort();
     if (!repos.length) throw new Error("No Git repositories found under paths.");
-    return { batchSize, quietRounds, maxRounds, ledgerPath, repos, units: args.mode === "repos" ? repos : [] };
+    const ledgerScope = [...new Set(roots.map(pathKey))].sort();
+    return { batchSize, quietRounds, maxRounds, ledgerPath, scope: ledgerScope, repos,
+        units: args.mode === "repos" ? repos : [] };
 }
 
 async function tree(repo) {
@@ -223,7 +227,7 @@ async function dirty(repo) {
     return paths;
 }
 
-async function loadLedger(path, args) {
+async function loadLedger(path, args, scope) {
     let content;
     try {
         content = await readFile(path, "utf8");
@@ -237,6 +241,9 @@ async function loadLedger(path, args) {
     const state = JSON.parse(content.slice(start + marker.length, end));
     if (state.version !== 1 || state.goal !== args.goal || state.mode !== args.mode) {
         throw new Error("ledgerPath belongs to a different goal or mode; choose another path.");
+    }
+    if (JSON.stringify(state.scope) !== JSON.stringify(scope)) {
+        throw new Error("ledgerPath belongs to a different repository or paths; choose another path.");
     }
     return state;
 }
@@ -394,7 +401,7 @@ export const exhaustiveTask = {
         // Journal preparation: completed rounds may delete files that matched paths.
         const config = await ctx.step("prepare-v1", () => prepare(ctx.args));
         const plan = await ctx.step("plan-v1", async () => {
-            const previous = await loadLedger(config.ledgerPath, ctx.args);
+            const previous = await loadLedger(config.ledgerPath, ctx.args, config.scope);
             const preExisting = {};
             // Edits kept from a blocked round belong to the workflow, not the user.
             for (const repo of config.repos) {
@@ -404,7 +411,7 @@ export const exhaustiveTask = {
             return { previous, repos: config.repos, units: config.units, preExisting };
         });
         const state = plan.previous ?? {
-            version: 1, goal: ctx.args.goal, mode: ctx.args.mode, acceptance: ctx.args.acceptance,
+            version: 1, goal: ctx.args.goal, mode: ctx.args.mode, acceptance: ctx.args.acceptance, scope: config.scope,
             processed: [], findings: [], changes: [], reviews: [],
         };
         state.acceptance = ctx.args.acceptance;

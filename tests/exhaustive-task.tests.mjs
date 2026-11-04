@@ -365,6 +365,9 @@ test("a new run with the same ledger continues after processed units and rejects
     assert.match(await readFile(f.args.ledgerPath, "utf8"), /4\/4 units processed/);
 
     await assert.rejects(harness({ ...f.args, goal: "Another goal" }, defaultHandler()).run(), /different goal/);
+    inside(await repo(join(f.root, "other-repo"), { "src/a.txt": "a\n", "src/z.txt": "z\n" }));
+    await assert.rejects(harness(f.args, defaultHandler()).run(), /different repository/);
+    inside(f.path);
     await writeFile(f.args.ledgerPath, "# Someone else's notes\n");
     await assert.rejects(harness(f.args, defaultHandler()).run(), /not an exhaustive-task ledger/);
 });
