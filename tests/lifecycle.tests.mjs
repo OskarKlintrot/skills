@@ -95,14 +95,15 @@ test("lifecycle uses the required skills and specialist personas without fixing 
     await approvePlan(h);
     await lifecycle.run(h.ctx);
     const skills = {
-        Define: ["agent-skills:spec-driven-development"],
-        Plan: ["agent-skills:planning-and-task-breakdown"],
-        "Build:first": ["agent-skills:incremental-implementation", "agent-skills:test-driven-development"],
-        Verify: ["agent-skills:test-driven-development"],
+        Define: ["agent-skills:spec-driven-development", "agent-skills:git-workflow-and-versioning"],
+        Plan: ["agent-skills:planning-and-task-breakdown", "agent-skills:git-workflow-and-versioning"],
+        "Build:first": ["agent-skills:incremental-implementation", "agent-skills:test-driven-development",
+            "agent-skills:git-workflow-and-versioning"],
+        Verify: ["agent-skills:test-driven-development", "agent-skills:git-workflow-and-versioning"],
         "Review:code": ["agent-skills:code-review-and-quality"],
         "Review:security": ["agent-skills:security-and-hardening"],
         "Review:tests": ["agent-skills:test-driven-development"],
-        Ship: ["agent-skills:shipping-and-launch"],
+        Ship: ["agent-skills:shipping-and-launch", "agent-skills:git-workflow-and-versioning"],
     };
     const personas = {
         "Review:code": "oskar-tools:code-reviewer",
@@ -250,6 +251,11 @@ test("phase prompts route unresolved questions to the user and retain lifecycle 
         assert.ok(call.schema.required.includes("questions"));
     }
     assert.match(h.calls[0].prompt, /Use phase-specific installed skills and/);
+    for (const label of ["Commit:spec", "Commit:plan", "Build:first", "Build:second"]) {
+        const prompt = h.calls.find((call) => call.label === label).prompt;
+        assert.match(prompt, /agent-skills:git-workflow-and-versioning/);
+        assert.match(prompt, /do not prohibit creating an appropriate feature branch or commits/i);
+    }
     assert.match(h.calls.find((c) => c.label === "Define").prompt, /write a complete specification/);
     assert.match(h.calls.find((c) => c.label === "Define").prompt, /capability map/);
     assert.match(h.calls.find((c) => c.label === "Plan").prompt, /Do not wait/);
@@ -398,13 +404,13 @@ test("ship requires evidence and rollback, not just a GO string", async () => {
     }
 });
 
-test("prompts use the lifecycle policy and enforce shared-worktree safety and no release actions", async () => {
+test("prompts use Git workflow guidance and enforce shared-worktree safety", async () => {
     const h = harness();
     await approvePlan(h);
     await lifecycle.run(h.ctx);
     for (const call of h.calls) {
         assert.match(call.prompt, /Do not delegate/);
-        assert.match(call.prompt, /Do not push, merge, or deploy/);
+        assert.match(call.prompt, /agent-skills:git-workflow-and-versioning/);
         assert.match(call.prompt, /pre-existing/);
         assert.doesNotMatch(call.prompt, /do not require or invoke external skills/i);
         const context = JSON.parse(call.prompt.split("Context (JSON):\n")[1]);
@@ -465,6 +471,8 @@ test("spec and plan commits happen only after their own approvals", async () => 
         assert.match(call.prompt, /git diff --cached/);
         assert.match(call.prompt, /baseline/);
         assert.match(call.prompt, /Do not use git add -A/);
+        assert.match(call.prompt, /commit each verified implementation increment atomically/);
+        assert.doesNotMatch(call.prompt, /Do not create branches/);
         assert.ok(call.schema.required.includes("commit"));
     }
 });

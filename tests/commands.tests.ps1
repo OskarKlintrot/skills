@@ -129,6 +129,9 @@ Assert-Check 'Workflow owns all six phases, approval gates, baseline capture and
     $workflow.Contains('agent-skills:incremental-implementation') -and
     $workflow.Contains('agent-skills:test-driven-development') -and
     $workflow.Contains('agent-skills:shipping-and-launch') -and
+    $workflow.Contains('agent-skills:git-workflow-and-versioning') -and
+    $workflow.Contains('do not prohibit creating an appropriate feature branch') -and
+    $workflow -notmatch 'Do not create branches' -and
     $workflow.Contains('oskar-tools:code-reviewer') -and
     $workflow.Contains('oskar-tools:security-auditor') -and
     $workflow.Contains('oskar-tools:test-engineer')
