@@ -235,7 +235,9 @@ Commit workers must not edit source, spec, plan or task content.
 Do not change permissions or accept risks for the user.
 Preserve pre-existing work and the index. The supplied baseline records the initial HEAD,
 working-tree status, staged paths, unstaged paths and untracked paths. Do not modify or stage
-any path present in that baseline; stop with a question if assigned work overlaps it.
+any path in baseline.stagedPaths, baseline.unstagedPaths or baseline.untrackedPaths;
+stop with a question if assigned work overlaps those dirty paths. Clean tracked source
+files may be edited by Build when required by its approved assignment.
 Inspect git status, git diff and git diff --cached before any edits or commits.
 Never expose secrets. Stop and report ambiguous scope, missing evidence, or high-risk work
 (auth/permissions, destructive migrations, payments, deletions, secrets or release actions)
@@ -334,12 +336,13 @@ export const lifecycle = {
         const specRevision = generations.specGeneration ? String(generations.specGeneration) : "";
         const planRevision = generations.planGeneration ? String(generations.planGeneration) : "";
         const agent = async (label, instruction, context, outputSchema = schema(), persona) => {
+            const { trackedPaths, protectedState, ...workerBaseline } = baseline;
             const feedback = label === "Define" || label === "Commit:spec" ?
                 (revisions.define ? { define: revisions.define } : {}) : revisions;
             const result = await ctx.agent(
                 `Engineering lifecycle: ${label}\n` + boundaries +
                 `\nAssignment:\n${instruction}\nContext (JSON):\n` +
-                JSON.stringify({ ...context, baseline, revisions: feedback,
+                JSON.stringify({ ...context, baseline: workerBaseline, revisions: feedback,
                     revisionGeneration: label === "Define" || label === "Commit:spec" ?
                         { spec: generations.specGeneration } :
                         { spec: generations.specGeneration, plan: generations.planGeneration },
@@ -365,7 +368,7 @@ export const lifecycle = {
             return stop("Define", "revisionPath overlaps pre-existing work; choose a new request path.");
         }
         const beforeDefine = await ctx.step(`before-define-v2:${specRevision}`, captureBaseline);
-        const spec = await agent("Define",
+        const defineInstruction =
             "Use the installed agent-skills:spec-driven-development skill for this specification phase. " +
             "If it is unavailable, return blocked and report the missing dependency; do not silently " +
             "substitute generic guidance. Own the Define stage of the lifecycle. Read repository instructions and relevant code, " +
@@ -383,9 +386,41 @@ export const lifecycle = {
             "constraints, non-goals, success criteria and open questions. Record agreed requirements " +
             "and any explicit assumptions. Do not plan tasks, implement, stage or commit. Return the " +
             "worktree-root-relative specPath and cite the written file and relevant repository evidence. " +
-            "If revisions.define is supplied, revise this run's spec at its original path according to that feedback; " +
-            "preserve unrelated files and report unresolved decisions.",
-            { goal: ctx.args.goal }, schema({ specPath: text }));
+            "If revisions.define is supplied, revise this run's spec at the supplied pinned revisionTarget " +
+            "(or choose a distinct spec path if no specification has been selected yet); " +
+            "preserve unrelated files and report unresolved decisions.";
+        const initialSpec = await ctx.step("initial-spec-selection-v1", () => agent("Define",
+            defineInstruction, { goal: ctx.args.goal }, schema({ specPath: text })));
+        const selectedSpec = specRevision && (!evidenced(initialSpec) || !nonempty(initialSpec.specPath)) ?
+            await agent("Define", defineInstruction, { goal: ctx.args.goal, clarifying: true },
+                schema({ specPath: text })) : initialSpec;
+        if (!evidenced(selectedSpec)) {
+            reports.Define = selectedSpec;
+            return stop("Define", "Requirements unclear, spec missing, or Define blocked.");
+        }
+        if (!nonempty(selectedSpec.specPath)) return stop("Define", "Define did not return a specPath.");
+        const selectedSource = await loadSpec(selectedSpec.specPath);
+        if (selectedSource.error) return stop("Define", selectedSource.error);
+        const origin = await ctx.step("spec-origin-v1", async () => {
+            const source = selectedSource;
+            const sourceKey = source.path.replaceAll("\\", "/");
+            const tracked = baseline.trackedPaths.includes(sourceKey);
+            const revisionTarget = tracked ?
+                `tasks/lifecycle-spec-${fingerprint(ctx.runId).slice(0, 12)}.md` : source.path;
+            const occupied = [...baseline.trackedPaths, ...baseline.untrackedPaths]
+                .some((path) => path.replaceAll("\\", "/") === revisionTarget.replaceAll("\\", "/"));
+            return { sourcePath: source.path, revisionTarget, occupied: tracked && occupied };
+        });
+        if (specRevision && origin?.occupied) {
+            return stop("Define", "The workflow-owned spec revision path overlaps pre-existing work.");
+        }
+        const spec = specRevision && selectedSpec === initialSpec ? await agent("Define", defineInstruction +
+            " Use sourcePath as read-only reference. Write the revised specification only to " +
+            "revisionTarget; this is the pinned workflow-owned revision path. If it differs from " +
+            "sourcePath, create a complete revised copy and preserve the original source.",
+        { goal: ctx.args.goal, sourcePath: origin.sourcePath, revisionTarget: origin.revisionTarget },
+        schema({ specPath: text })) : selectedSpec;
+        reports.Define = spec;
         if (!evidenced(spec)) return stop("Define", "Requirements unclear, spec missing, or Define blocked.");
         const headChanged = await ctx.step(`define-head-observation-v1:${specRevision}`,
             () => currentHead(baseline.root) !== beforeDefine.head);
@@ -458,7 +493,8 @@ export const lifecycle = {
             spec.questions = [definePaths.question];
             return stop("Define", definePaths.error);
         }
-        const ownedSpec = await ctx.step("workflow-owned-spec-v1", () => specPathKey);
+        const ownedSpec = specRevision && origin ? origin.revisionTarget.replaceAll("\\", "/") :
+            origin?.sourcePath.replaceAll("\\", "/");
         if (ownedSpec !== specPathKey) {
             return stop("Define", "Define selected a different path than the original workflow-owned spec.");
         }

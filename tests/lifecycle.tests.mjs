@@ -248,6 +248,62 @@ test("Define rejects staged-only edits to initially clean tracked content", asyn
     });
 });
 
+test("workers protect only dirty paths and omit the runtime tracked-file inventory", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        await approvePlan(h);
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+        for (const call of h.calls) {
+            const context = JSON.parse(call.prompt.split("Context (JSON):\n")[1]);
+            assert.equal(Object.hasOwn(context.baseline, "trackedPaths"), false);
+            assert.equal(Object.hasOwn(context.baseline, "protectedState"), false);
+            assert.match(call.prompt, /baseline\.stagedPaths, baseline\.unstagedPaths or baseline\.untrackedPaths/);
+            assert.doesNotMatch(call.prompt, /any path present in that baseline/);
+        }
+        assert.match(h.calls.find((call) => call.label === "Build:first").prompt,
+            /Clean tracked source\s+files may be edited by Build/);
+    });
+});
+
+test("feedback on a tracked source spec creates a pinned copy and preserves the source", async () => {
+    await inRepository(async (_, git) => {
+        await writeFile("source.md", "# Existing source");
+        git("add", "source.md");
+        git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "-m", "docs: Add source specification");
+        const h = harness({
+            Define: report({ specPath: "source.md" }),
+            Plan: planReport({ artifactPaths: ["plan.md"], tasks: [task("first")], completed: [] }),
+        });
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
+            if (options.label === "Define" && context.revisionTarget) {
+                await mkdir("tasks", { recursive: true });
+                await writeFile(context.revisionTarget, `# Revised source: ${context.revisions.define}`);
+                return { ...result, specPath: context.revisionTarget };
+            }
+            if (options.label === "Plan") await writeFile("plan.md", "# Plan");
+            return result;
+        };
+        await approveSpec(h);
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        await mkdir("tasks");
+        for (const feedback of ["First revision", "Second revision"]) {
+            await writeFile(context.revisionRequestPath, JSON.stringify({ define: feedback }));
+            await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-spec:/);
+            assert.equal(await readFile("source.md", "utf8"), "# Existing source");
+        }
+        const revisions = h.calls.filter((call) => call.label === "Define").slice(1)
+            .map((call) => JSON.parse(call.prompt.split("Context (JSON):\n")[1]));
+        assert.equal(revisions.length, 2);
+        assert.equal(revisions[0].revisionTarget, revisions[1].revisionTarget);
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+    });
+});
+
 test("a spec revision cannot switch away from its original workflow-owned path", async () => {
     await inRepository(async () => {
         const h = generatedSpecHarness();
