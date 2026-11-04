@@ -46,9 +46,14 @@ that only record findings are not, which keeps discovery cheap.
    commits with an optional stronger `verifyModel` for verification. Never
    invent model names; use names the user gives or the runtime lists.
 6. Ask with `ask_user` whether to use a round ceiling, unless the user already
-   answered for this invocation: no ceiling or a user-chosen positive integer.
-   Omit `maxRounds` for no ceiling. Never invent a default. Explain that without a
-   ceiling execution continues until completion, a blocker or a runtime limit.
+   answered for this invocation. Offer the recommended ceiling first, marked
+   "(Recommended)", then no ceiling and a custom positive integer. Recommend 10
+   for `search`; for `files` and `repos`, the number of unit batches
+   (units divided by `batchSize`, rounded up) plus 5 review rounds. The ceiling
+   pauses the run for approval to continue rather than ending it, so it caps
+   spend without losing work. Omit `maxRounds` for no ceiling. Explain that
+   without a ceiling execution continues until completion, a blocker or a
+   runtime limit.
    Set credit/time/agent limits only when the user specifies them.
 7. Load the installed `agent-skills:git-workflow-and-versioning` skill and follow
    repository Git conventions. If unavailable, stop and report the dependency.

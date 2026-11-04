@@ -145,7 +145,7 @@ Assert-Check 'Exhaustive task skill starts its workflow after mode, ledger, batc
     $exhaustive.Contains('about the batch size') -and
     $exhaustive.Contains('which models to use') -and
     $exhaustive.Contains('whether to use a round ceiling') -and
-    $exhaustive.Contains('Never invent a default.') -and
+    $exhaustive.Contains('Recommend 10') -and
     $exhaustive.Contains('explicit launch') -and
     $exhaustive.Contains('Never auto-resume.')
 )
