@@ -2,7 +2,7 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, [engineering workflow commands](#engineering-workflow-commands) that mostly use the separately installed Addy agent-skills plugin, a standalone Addy lifecycle workflow, four [specialist personas](#agents), and a no-agent `hello-world` example. These components are available through plugin installation without development mappings. It contains no standalone instructions or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, [engineering workflow commands](#engineering-workflow-commands) that mostly use the separately installed Addy agent-skills plugin, four [specialist personas](#agents), and [dynamic workflows](#dynamic-workflows) for a standalone Addy lifecycle, batched exhaustive tasks and a no-agent `hello-world` example. These components are available through plugin installation without development mappings. It contains no standalone instructions or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
 
 ## Git conventions
 
@@ -205,6 +205,9 @@ com.github.copilot\
     addy-lifecycle\
       extension.mjs
       workflow.mjs
+    exhaustive-task\
+      extension.mjs
+      workflow.mjs
   hooks\
     hooks.json
     scripts\
@@ -253,6 +256,46 @@ copilot --experimental workflow run hello-world --args '{"name":"Oskar"}'
 ```
 
 It returns `{"greeting":"Hello, Oskar!","source":"oskar-tools plugin"}`. In an interactive session, enable experimental features and ask Copilot to run the `hello-world` dynamic workflow.
+
+#### Exhaustive tasks
+
+`exhaustive-task` grinds through a task that agents tend to abandon early, such as "find every Azure DevOps integration", "list every difference between the design and the implementation" or "update packages in every repository under C:\repos, then change X in Program.cs". It automates asking an agent "did you find everything?" until it stops finding things, so cheaper models can handle investigations that otherwise need stronger ones. Each round is a fresh agent that sees the ledger so far:
+
+**Unit rounds (one batch of files or repositories each) -> review rounds with changing search strategies until `quietRounds` consecutive rounds find no new findings or changes (new locations on known findings are recorded but do not count as progress) -> final read-only verification, which can reject findings and reopen the search.** Rounds that change files are verified; rounds that only record findings cost a single agent call. There is no commit step: changes stay uncommitted unless the goal asks workers to commit.
+
+Start with `/oskar-tools:exhaustive-task <task>` or invoke the installed `exhaustive-task` skill. `skills\exhaustive-task\SKILL.md` owns preparation: it clarifies goal and acceptance, chooses the mode and ledger location, asks about batch size and an optional round ceiling, asks whether workers should commit, and obtains explicit launch approval. Execution then runs autonomously until completion, a blocker, a runtime limit or a round checkpoint.
+
+Modes:
+
+| Mode | Units | `paths` |
+| --- | --- | --- |
+| `files` | Tracked and non-ignored untracked files in the current repository, enumerated by Git | Repository-relative files/directories; `["."]` for the whole repository. Run from the worktree root. |
+| `repos` | Git repositories found under `paths` (depth 4; skips hidden, `node_modules`, `bin`, `obj`, `dist`, `build` and `packages`) | Absolute directories |
+| `search` | None; only review rounds | Optional absolute directories containing the repositories that may change. Defaults to the current directory. |
+
+Code, not an agent, enumerates units and splits them into batches, so every unit is assigned to exactly one round. Each Work report must list exactly its batch as processed. Afterwards review rounds search for missed findings or remaining changes, each with a strategy different from earlier rounds. They record every new finding or location but make at most `batchSize` changes. `search` mode skips the units and is usually the cheapest choice for discovery: with the defaults, one productive round, two quiet rounds and the final verification make four agent calls. Use it when the work cannot be enumerated as files or repositories, for example comparing against a design: export the design to a file first, since workflow agents cannot open canvases.
+
+```powershell
+copilot --experimental workflow run exhaustive-task --args '{"goal":"Find every Azure DevOps integration","acceptance":"Each integration lists source locations, purpose, authentication and API used, verified against the source.","mode":"files","paths":["."],"ledgerPath":"C:\\session-artifacts\\ado-integrations.md"}'
+```
+
+Arguments: `goal`, `acceptance`, `mode` and an absolute `ledgerPath` are required. Optional `paths` (required for `files` and `repos`), `batchSize` (default 5 files, 1 repository or 5 changes per review round), `quietRounds` (default 2), `maxRounds` (no default), `model` (workers) and `verifyModel` (verification; defaults to `model`). Without models the runtime preferences apply. Direct invocation skips the skill's preparation; the caller must arrange equivalent approval.
+
+The ledger is a workflow-owned Markdown file with findings (stable kebab-case IDs, locations, details), changes, every review round's strategy (quiet ones too, so later rounds and runs do not repeat them), rejected finding IDs and processed units, plus an embedded JSON state block. Agents return findings; the code merges duplicates by ID and writes the file, so earlier results cannot be lost. Ordinary rounds only add locations to a known finding; a Work attempt that repairs a verification complaint gets the full findings, and each finding it returns replaces the ledger entry whole (title, locations and details), so repairs can drop wrong locations. Findings rejected by either verifier, including by an earlier attempt in the same round, are removed and cannot be re-added. Text in the state cannot break the embedded block. Starting a new run with the same `ledgerPath`, goal, acceptance, mode and repository or `paths` roots continues after the processed units, and progress counts units from earlier `paths` too; another goal, acceptance, mode, repository or root, or a non-ledger file is rejected, because processed units are stored relative to the repository and were checked against the original acceptance. The `files` manifest excludes the ledger and files under symlinked or junctioned directories, and matches `paths` case-insensitively on Windows. Keep the ledger outside the repository unless it is a deliverable: a ledger inside a repository changes the files every productive round and so triggers a Verify agent.
+
+When a round changes file contents, the verifier checks its findings and changes and runs relevant non-mutating checks. An incomplete verdict sends its repair instructions back to Work, up to three attempts per round; findings and changes from earlier attempts are kept unless a later attempt restates them. Findings-only rounds skip this; the final verification instead checks every finding and runs its own searches. An incomplete final verdict starts another review round with its instructions, up to three final verifications. Workers stage and commit only when the goal asks for commits, and then commit their own changes atomically in Work, before verification, never on a default or detached branch; the code blocks a round when Work switches branches or commits on a detached branch or the default branch (`origin/HEAD`, else `main` or `master`). Verifiers never commit; the code compares `git status --porcelain=v2 --branch` around verification, so verifier commits, staging or branch switches block. Otherwise every change and an in-repository ledger stay uncommitted for the user. When commits are wanted, the skill offers to create a feature branch for repositories on their default branch. After a blocked round it asks whether to keep or reverse the edits. Files that were dirty before the run are user work: agents must not revert or commit them. The code detects content changes with a temporary Git index (`git add -A` + `git write-tree` without touching the real index), so commits alone do not count as changes, and blocks if Verify changes file contents. A blocked round leaves its units unprocessed in the ledger, so the next run repeats them. The runtime journals preparation, each round's starting snapshot and the checkpoint baseline, so a resumed run still verifies edits from an interrupted round. When a blocked round leaves edits behind, the ledger records that round's starting point and files; the next run treats those edits as workflow work rather than user work, so they are verified even if the worker changes nothing more. A continued ledger may have no scoped files left.
+
+Optional `maxRounds` pauses after every that many rounds while work remains. The skill recommends 10 for `search` and, for `files` and `repos`, the number of unit batches plus 5 review rounds. The main conversation must obtain approval before resuming the same run; edits while paused block the resumed round. Blocked results include `reason`, `remainingUnits`, `needsInput` and the ledger path. Resolve the cause and start a new run with the same ledger.
+
+Limitations: findings and coverage are model reports checked for structure, batch coverage and file stability, not proof of semantic completeness. Unit rounds that only record findings are not verified individually, so a worker that skims a batch is caught only if the final verification notices. Review rounds stop when agents stop finding things, not when completeness is proven. Commits a goal asks for are made before verification, and the code does not check them. There is no declared resource ceiling; set runtime limits when needed. Agents share the working tree and run sequentially. The workflow cannot tell your edits from an agent's: anything that changes in scope during a round, including your own edits, counts as that round's work, so avoid editing in-scope files while it runs. No role may push, merge, deploy, reset hard, rewrite history, blindly restore files from another branch or change remote systems.
+
+Run the workflow contract tests without model requests:
+
+```powershell
+node --test tests\exhaustive-task.tests.mjs
+```
+
+They run a simulated workflow context against real temporary Git repositories: batch coverage, review termination, final verification, model selection, duplicate merging, rejected findings, repairs, pre-existing edits and worker commits, repository discovery, ledger continuation and round checkpoints. `tests\commands.tests.ps1 -Runtime` checks installed skill/workflow registration. Neither establishes live model compliance.
 
 #### Addy lifecycle
 

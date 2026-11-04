@@ -18,7 +18,7 @@ $skills = [ordered]@{
 }
 $failures = 0
 $descriptions = @{}
-$packagedSkills = @('addy-lifecycle', 'git-conventions', 'readme-conventions')
+$packagedSkills = @('addy-lifecycle', 'exhaustive-task', 'git-conventions', 'readme-conventions')
 $packagedAgents = @('code-reviewer', 'security-auditor', 'test-engineer', 'web-performance-auditor')
 
 function Assert-Check([string]$Name, [bool]$Condition) {
@@ -42,7 +42,7 @@ Assert-Check 'Exactly the ten documented commands are packaged' (
     -not (Compare-Object @($skills.Keys) @($files.BaseName))
 )
 $skillDirectories = @(Get-ChildItem -LiteralPath (Join-Path $root 'skills') -Directory)
-Assert-Check 'Packaged skills contain the lifecycle trigger and conventions skills' (
+Assert-Check 'Packaged skills contain both workflow coordinators and conventions skills' (
     -not (Compare-Object $packagedSkills @($skillDirectories.Name))
 )
 $agentDirectory = Join-Path $root 'com.github.copilot' 'agents'
@@ -137,6 +137,32 @@ Assert-Check 'Workflow owns all six phases, approval gates, baseline capture and
     $workflow.Contains('oskar-tools:test-engineer')
 )
 
+$exhaustive = Get-Content -LiteralPath (Join-Path $root 'skills' 'exhaustive-task' 'SKILL.md') -Raw
+Assert-Check 'Exhaustive task skill starts its workflow after mode, ledger, batch size, models, round ceiling and launch approval' (
+    $exhaustive -match '\A---\r?\nname: exhaustive-task\r?\ndescription: [^\r\n]+' -and
+    $exhaustive.Contains('run the `exhaustive-task` dynamic workflow') -and
+    $exhaustive.Contains('Choose the mode') -and
+    $exhaustive.Contains('`ledgerPath`') -and
+    $exhaustive.Contains('about the batch size') -and
+    $exhaustive.Contains('which models to use') -and
+    $exhaustive.Contains('whether to use a round ceiling') -and
+    $exhaustive.Contains('Recommend 10') -and
+    $exhaustive.Contains('explicit launch') -and
+    $exhaustive.Contains('Never auto-resume.')
+)
+Assert-Check 'Exhaustive task coordinator protects user work and routes human decisions' (
+    $exhaustive.Contains('agent-skills:git-workflow-and-versioning') -and
+    $exhaustive.Contains('git status --porcelain') -and
+    $exhaustive.Contains('`needsInput`') -and
+    $exhaustive.Contains('same `ledgerPath`') -and
+    $exhaustive.Contains('reverse patch') -and
+    $exhaustive.Contains('leave them uncommitted') -and
+    $exhaustive.Contains('no commit') -and
+    $exhaustive.Contains('never on the') -and
+    $exhaustive.Contains('do not let them pile up') -and
+    $exhaustive.Contains('default branch')
+)
+
 if ($failures) { throw "$failures command checks failed." }
 if (-not $Runtime) { return }
 
@@ -157,10 +183,18 @@ try {
     Assert-Check 'Installed plugin discovers the addy-lifecycle skill' (
         $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('addy-lifecycle')
     )
+    Assert-Check 'Installed plugin discovers the exhaustive-task skill' (
+        $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('exhaustive-task')
+    )
     $workflowOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run addy-lifecycle --args '{"notGoal":"invalid"}' 2>&1
     Assert-Check 'Installed lifecycle workflow loads and enforces its argument schema' (
         $LASTEXITCODE -eq 2 -and
         ($workflowOutput -join "`n").Contains('Invalid arguments for dynamic workflow "addy-lifecycle".')
+    )
+    $exhaustiveOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run exhaustive-task --args '{"goal":"No scope or acceptance"}' 2>&1
+    Assert-Check 'Installed exhaustive-task workflow loads and enforces its argument schema without agents' (
+        $LASTEXITCODE -eq 2 -and
+        ($exhaustiveOutput -join "`n").Contains('Invalid arguments for dynamic workflow "exhaustive-task".')
     )
 
     # PowerShell resolves npm launchers as well as native CLI installations.
