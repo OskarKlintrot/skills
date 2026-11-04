@@ -501,7 +501,7 @@ test("a spec revision cannot switch away from its original workflow-owned path",
         h.ctx.agent = async (prompt, options) => {
             const result = await agent(prompt, options);
             const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
-            if (options.label === "Define" && context.revisions.define) {
+            if (options.label === "Define" && context.revisions.define === "Revise the spec") {
                 await writeFile("other-spec.md", "# Unrelated specification");
                 return { ...result, specPath: "other-spec.md" };
             }
@@ -514,6 +514,12 @@ test("a spec revision cannot switch away from its original workflow-owned path",
         const result = await lifecycle.run(h.ctx);
         assert.equal(result.verdict, "NO-GO");
         assert.match(result.reason, /workflow-owned spec/);
+        await writeFile(context.revisionRequestPath, JSON.stringify({ define: "Use the original path" }));
+        const retried = await lifecycle.run(h.ctx);
+        assert.equal(retried.verdict, "NO-GO");
+        assert.match(retried.reason, /prior Define attempt violated/);
+        assert.equal(h.calls.filter((call) => call.label === "Define").length, 2);
+        assert.equal(h.calls.some((call) => call.label === "Commit:spec"), false);
     });
 });
 

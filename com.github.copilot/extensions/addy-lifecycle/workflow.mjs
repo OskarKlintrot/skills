@@ -450,7 +450,8 @@ export const lifecycle = {
             const headChanged = await ctx.step(`define-head-observation-v1:${key}`, () => false);
             const protectedChanges = await ctx.step(`define-protected-state:${key}`, () => []);
             const paths = await ctx.step(`define-path-observation-v3:${key}`, () => null);
-            if (headChanged || protectedChanges.length || paths?.error) {
+            const wrongSpecPath = await ctx.step(`define-owned-spec-observation-v1:${key}`, () => false);
+            if (headChanged || protectedChanges.length || paths?.error || wrongSpecPath) {
                 return stop("Define", "A prior Define attempt violated worktree safety; inspect and restore the worktree before starting a clean run.", true);
             }
         }
@@ -559,8 +560,10 @@ export const lifecycle = {
         if (currentSpec.error) return stop("Define", currentSpec.error);
         const ownedSpec = specRevision && origin ? origin.revisionTarget.replaceAll("\\", "/") :
             origin?.sourcePath.replaceAll("\\", "/");
-        if (ownedSpec !== specPathKey) {
-            return stop("Define", "Define selected a different path than the original workflow-owned spec.");
+        const wrongSpecPath = await ctx.step(`define-owned-spec-observation-v1:${specRevision}`,
+            () => ownedSpec !== specPathKey);
+        if (wrongSpecPath) {
+            return stop("Define", "Define selected a different path than the original workflow-owned spec.", true);
         }
         const preparedSpec = await ctx.step(`prepared-spec-v3:${specRevision}`, () => currentSpec);
         if (preparedSpec.path !== currentSpec.path || preparedSpec.content !== currentSpec.content) {
