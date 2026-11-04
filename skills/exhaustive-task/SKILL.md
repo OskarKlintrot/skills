@@ -13,7 +13,7 @@ The workflow replaces asking an agent "did you find everything?" until it stops
 finding things. It processes small batches and records results in a ledger it
 owns: unit rounds (a batch of files or repositories each), then review rounds
 with changing search strategies until `quietRounds` consecutive review rounds
-find nothing new. A final read-only verification then checks the ledger and can
+find no new findings, locations or changes. A final read-only verification then checks the ledger and can
 reopen the search. Rounds that change files are verified and committed; rounds
 that only record findings are not, which keeps discovery cheap.
 

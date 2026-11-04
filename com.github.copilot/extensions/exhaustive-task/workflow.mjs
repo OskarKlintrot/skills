@@ -253,7 +253,7 @@ function render(state, total) {
         lines.push("## Review rounds with results", "");
         for (const review of state.reviews) {
             lines.push(`- Round ${review.round}: ${review.strategy} (new: ${review.newFindings.join(", ") || "none"}; ` +
-                `changes: ${review.changes})`);
+                `new locations: ${review.newLocations ?? 0}; changes: ${review.changes})`);
         }
         lines.push("");
     }
@@ -275,17 +275,22 @@ function render(state, total) {
 function apply(state, result, run) {
     const ids = new Set(state.findings.map((finding) => finding.id));
     const newFindings = result.findings.filter((finding) => !ids.has(finding.id)).map((finding) => finding.id);
+    let newLocations = 0;
     for (const finding of result.findings) {
         const existing = state.findings.find((entry) => entry.id === finding.id);
-        if (existing) existing.locations = [...new Set([...existing.locations, ...finding.locations])];
-        else state.findings.push(structuredClone(finding));
+        if (existing) {
+            const added = finding.locations.filter((location) => !existing.locations.includes(location));
+            newLocations += added.length;
+            existing.locations.push(...added);
+        } else state.findings.push(structuredClone(finding));
     }
     if (result.batch) state.processed.push(...result.batch);
     if (result.changes.length) state.changes.push({ run, round: result.round, items: result.changes });
-    if (!result.batch && (newFindings.length || result.changes.length)) {
-        state.reviews.push({ run, round: result.round, strategy: result.strategy, newFindings, changes: result.changes.length });
+    if (!result.batch && (newFindings.length || newLocations || result.changes.length)) {
+        state.reviews.push({ run, round: result.round, strategy: result.strategy, newFindings, newLocations,
+            changes: result.changes.length });
     }
-    return { state, newFindings };
+    return { state, newFindings, newLocations };
 }
 
 const boundaries = `
@@ -330,7 +335,8 @@ const verifyInstruction = "Read-only independent verification of a round that ch
     "true only with passing checks and nothing missing (rejected findings alone do not make it incomplete); " +
     "remaining is then \"\". Otherwise return complete false and precise, actionable remaining repair instructions.";
 const finalInstruction = "Read-only final verification of the whole ledger before the workflow reports " +
-    "completion; run only non-mutating checks. Do not trust earlier agents. Check every ledger finding is " +
+    "completion; run only non-mutating checks. ledger.findings in the context is the complete ledger with " +
+    "details; you do not need to read ledgerPath. Do not trust earlier agents. Check every ledger finding is " +
     "real, relevant to the goal and not a duplicate of another entry; list inaccurate finding IDs in rejected. " +
     "Then run your own independent searches across all repos/paths, using strategies not in previousStrategies, " +
     "to spot anything still missing against the goal and acceptance. Do not redo the whole task. Return " +
@@ -439,7 +445,7 @@ export const exhaustiveTask = {
                 const final = await ctx.step(`final-v1:${round}`, async () => {
                     const current = await snapshot(plan.repos);
                     const verification = await call(`Final:${round}:${current.fingerprint}`, finalInstruction,
-                        { round, ledger: { findings: brief(), processedCount: state.processed.length },
+                        { round, ledger: { findings: state.findings, processedCount: state.processed.length },
                             previousStrategies: strategies() }, verifySchema, verifyModel);
                     const ids = state.findings.map((finding) => finding.id);
                     if (!evidenced(verification) || typeof verification.complete !== "boolean" ||
@@ -556,12 +562,12 @@ export const exhaustiveTask = {
                 return { ...outcome, after: staged.fingerprint };
             });
             if (result.blocked) return stop(result.phase, result.reason, result.report);
-            const { newFindings } = apply(state, result, ctx.runId);
+            const { newFindings, newLocations } = apply(state, result, ctx.runId);
             commits.push(...result.commits.map((entry) => ({ round, ...entry })));
             if (batch) cursor += batch.length;
             else {
-                reviews.push({ round, strategy: result.strategy, newFindings, changes: result.changes.length });
-                quiet = newFindings.length || result.changes.length ? 0 : quiet + 1;
+                reviews.push({ round, strategy: result.strategy, newFindings, newLocations, changes: result.changes.length });
+                quiet = newFindings.length || newLocations || result.changes.length ? 0 : quiet + 1;
                 repair = null;
             }
             lastFingerprint = result.after;
