@@ -287,22 +287,38 @@ export const lifecycle = {
             spec.questions = [`The selected spec path ${currentSpec.path} already had uncommitted changes at workflow start. Choose a clean spec path or save those changes before continuing.`];
             return stop("Define", "The spec overlaps pre-existing work.");
         }
-        const changedTrackedPaths = gitPaths(["diff", "HEAD", "--name-only", "-z"])
-            .map((path) => path.replaceAll("\\", "/"));
-        if (changedTrackedPaths.includes(specPathKey)) {
-            spec.questions = [`Define changed the existing tracked file ${currentSpec.path}. Keep existing files unchanged and create a distinct spec, then start a new run.`];
-            return stop("Define", "Define modified an existing tracked file.");
+        const definePaths = await ctx.step("define-path-observation-v1", () => {
+            const changedTrackedPaths = gitPaths(["diff", "HEAD", "--name-only", "-z"])
+                .map((path) => path.replaceAll("\\", "/"));
+            if (changedTrackedPaths.includes(specPathKey)) {
+                return {
+                    specPathKey,
+                    error: "Define modified an existing tracked file.",
+                    question: `Define changed the existing tracked file ${currentSpec.path}. Keep existing files unchanged and create a distinct spec, then start a new run.`,
+                };
+            }
+            const currentUntrackedPaths = gitPaths(["ls-files", "--others", "--exclude-standard", "-z"])
+                .map((path) => path.replaceAll("\\", "/"));
+            const initialDirtyPaths = new Set(dirtyBaselinePaths);
+            const unexpectedPaths = [
+                ...changedTrackedPaths,
+                ...currentUntrackedPaths,
+            ].filter((path) => !initialDirtyPaths.has(path) && path !== specPathKey);
+            if (unexpectedPaths.length) {
+                return {
+                    specPathKey,
+                    error: "Define changed files outside its assigned spec.",
+                    question: `Define changed paths outside the spec: ${unexpectedPaths.join(", ")}. Preserve those files and start a new run.`,
+                };
+            }
+            return { specPathKey, changedTrackedPaths, untrackedPaths: currentUntrackedPaths };
+        });
+        if (definePaths.specPathKey !== specPathKey) {
+            return stop("Define", "Spec path changed since this run started.");
         }
-        const currentUntrackedPaths = gitPaths(["ls-files", "--others", "--exclude-standard", "-z"])
-            .map((path) => path.replaceAll("\\", "/"));
-        const initialDirtyPaths = new Set(dirtyBaselinePaths);
-        const unexpectedPaths = [
-            ...changedTrackedPaths,
-            ...currentUntrackedPaths,
-        ].filter((path) => !initialDirtyPaths.has(path) && path !== specPathKey);
-        if (unexpectedPaths.length) {
-            spec.questions = [`Define changed paths outside the spec: ${unexpectedPaths.join(", ")}. Preserve those files and start a new run.`];
-            return stop("Define", "Define changed files outside its assigned spec.");
+        if (definePaths.error) {
+            spec.questions = [definePaths.question];
+            return stop("Define", definePaths.error);
         }
         const preparedSpec = await ctx.step("prepared-spec-v2", () => currentSpec);
         if (preparedSpec.path !== currentSpec.path || preparedSpec.content !== currentSpec.content) {

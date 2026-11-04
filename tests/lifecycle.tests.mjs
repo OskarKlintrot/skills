@@ -477,6 +477,27 @@ test("spec and plan commits happen only after their own approvals", async () => 
     }
 });
 
+test("resuming plan approval does not attribute Plan artifacts to Define", async () => {
+    const h = harness();
+    await approveSpec(h);
+    const directory = await mkdtemp(resolve("tests", "fixtures", "lifecycle-"));
+    const planArtifact = join(directory, "plan.md");
+    const agent = h.ctx.agent;
+    h.ctx.agent = async (prompt, options) => {
+        const result = await agent(prompt, options);
+        if (options.label === "Plan") await writeFile(planArtifact, "# Generated plan");
+        return result;
+    };
+
+    try {
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan/);
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "GO");
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
 test("workflow captures the pre-edit Git baseline without caller-supplied paths", async () => {
     const h = harness({}, { goal: "Feature" });
     await approveSpec(h);
