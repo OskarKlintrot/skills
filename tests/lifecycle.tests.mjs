@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { join, relative, resolve } from "node:path";
 import { test } from "node:test";
 import { lifecycle } from "../com.github.copilot/extensions/addy-lifecycle/workflow.mjs";
@@ -66,6 +67,156 @@ async function approvePlan(h) {
     await approveSpec(h);
     await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan/);
 }
+
+async function inRepository(action, initialCommit = true) {
+    const previous = process.cwd();
+    const directory = await mkdtemp(resolve("tests", "fixtures", "lifecycle-repo-"));
+    const git = (...args) => execFileSync("git", args, { cwd: directory, stdio: "pipe" });
+    try {
+        git("init");
+        if (initialCommit) {
+            await writeFile(join(directory, "seed.txt"), "Initial content");
+            git("add", "seed.txt");
+            git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "-m", "docs: Add initial content");
+        }
+        process.chdir(directory);
+        await action(directory, git);
+    } finally {
+        process.chdir(previous);
+        await rm(directory, { recursive: true, force: true });
+    }
+}
+
+function generatedSpecHarness(specPath = "SPEC.md", args) {
+    const h = harness({ Define: report({ specPath }) }, args);
+    const agent = h.ctx.agent;
+    let written = false;
+    h.ctx.agent = async (prompt, options) => {
+        const result = await agent(prompt, options);
+        if (options.label === "Define" && !written) {
+            written = true;
+            await writeFile(specPath, "# Generated specification");
+        }
+        return result;
+    };
+    return h;
+}
+
+test("a repository without an initial commit can reach spec approval", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        await approveSpec(h);
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        assert.equal(context.baseline.head, null);
+    }, false);
+});
+
+test("Define detects overwrites of untracked work, tracked edits and staged content", async () => {
+    for (const state of ["untracked", "tracked", "staged"]) {
+        await inRepository(async (_, git) => {
+            const path = state === "tracked" ? "seed.txt" : "notes.txt";
+            await writeFile(path, "User work");
+            if (state === "staged") git("add", path);
+            const h = generatedSpecHarness();
+            const agent = h.ctx.agent;
+            h.ctx.agent = async (prompt, options) => {
+                const result = await agent(prompt, options);
+                if (options.label === "Define") {
+                    if (state === "staged") {
+                        await writeFile(path, "Overwritten index");
+                        git("add", path);
+                        await writeFile(path, "User work");
+                    } else await writeFile(path, "Overwritten user work");
+                }
+                return result;
+            };
+            const result = await lifecycle.run(h.ctx);
+            assert.equal(result.verdict, "NO-GO");
+            assert.match(result.reason, /pre-existing work/);
+        });
+    }
+});
+
+test("subdirectory launches compare all paths relative to the repository root", async () => {
+    await inRepository(async (directory) => {
+        await mkdir(join("packages", "widget"), { recursive: true });
+        await writeFile(join("packages", "widget", "notes.txt"), "User notes");
+        process.chdir(join(directory, "packages", "widget"));
+        const h = harness({ Define: report({ specPath: "packages/widget/SPEC.md" }) });
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            if (options.label === "Define") await writeFile("SPEC.md", "# Generated specification");
+            return result;
+        };
+        await approveSpec(h);
+    });
+});
+
+test("an initially dirty spec cannot be adopted when launched from a subdirectory", async () => {
+    await inRepository(async (directory) => {
+        await mkdir(join("packages", "widget"), { recursive: true });
+        await writeFile(join("packages", "widget", "SPEC.md"), "# User specification");
+        process.chdir(join(directory, "packages", "widget"));
+        const h = harness({ Define: report({ specPath: "packages/widget/SPEC.md" }) });
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "NO-GO");
+        assert.match(result.reason, /pre-existing work/);
+    });
+});
+
+test("plan revisions in the paused run retain the original baseline and require fresh approval", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            if (options.label === "Plan") {
+                const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
+                assert.equal(context.baseline.untrackedPaths.includes("plan.md"), false);
+                await writeFile("plan.md", context.revisions?.plan ? "# Revised plan" : "# Initial plan");
+            }
+            return result;
+        };
+        await approvePlan(h);
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        const revisionPath = context.revisionRequestPath;
+        await mkdir("tasks");
+        await writeFile(revisionPath, JSON.stringify({ plan: "Revise the task breakdown" }));
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        assert.equal(await readFile("plan.md", "utf8"), "# Revised plan");
+        assert.equal(h.calls.some((call) => call.label === "Commit:plan"), false);
+        await writeFile(revisionPath, JSON.stringify({ plan: "Revise it again with smaller slices" }));
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        assert.equal(h.calls.filter((call) => call.label === "Plan").length, 3);
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+    });
+});
+
+test("spec revisions in the paused run are redefined and require fresh approval", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness("SPEC.md", {
+            goal: "Build a feature", revisionPath: "revision.json",
+        });
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
+            if (options.label === "Define" && context.revisions?.define) {
+                await writeFile("SPEC.md", "# Revised specification");
+            }
+            return result;
+        };
+        await approveSpec(h);
+        await writeFile("revision.json", JSON.stringify({ define: "Change the success criteria" }));
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-spec:/);
+        assert.equal(h.calls.some((call) => call.label === "Commit:spec"), false);
+        assert.match(h.logs.at(-1), /# Revised specification/);
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+    });
+});
 
 test("spec and plan pause before any implementation; resume reuses phase results", async () => {
     const h = harness();

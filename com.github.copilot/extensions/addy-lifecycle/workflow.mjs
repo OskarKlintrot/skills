@@ -53,18 +53,38 @@ const committed = (report) => verified(report) && typeof report.commit === "stri
     /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(report.commit);
 const blocking = new Set(["Critical", "High", "Required"]);
 
-function gitOutput(args) {
-    return execFileSync("git", args, { cwd: process.cwd(), encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).trimEnd();
+function worktreeRoot() {
+    return execFileSync("git", ["rev-parse", "--show-toplevel"], {
+        cwd: process.cwd(), encoding: "utf8",
+    }).trimEnd();
 }
 
-function gitPaths(args) {
-    return execFileSync("git", args, { cwd: process.cwd(), maxBuffer: 16 * 1024 * 1024 })
+function gitPaths(args, root = worktreeRoot()) {
+    return execFileSync("git", args, { cwd: root, maxBuffer: 16 * 1024 * 1024 })
         .toString("utf8").split("\0").filter(Boolean);
 }
 
-function captureBaseline() {
+const fingerprint = (value) => createHash("sha256").update(value).digest("hex");
+
+async function pathState(path, root = worktreeRoot()) {
+    const absolute = resolve(root, path);
+    let worktree;
+    try {
+        const stat = await lstat(absolute);
+        worktree = stat.isSymbolicLink() ? { link: await readlink(absolute) } :
+            stat.isFile() ? { mode: stat.mode, hash: fingerprint(await readFile(absolute)) } :
+                { mode: stat.mode, directory: stat.isDirectory() };
+    } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        worktree = null;
+    }
+    return { path, worktree, index: gitPaths(["--literal-pathspecs", "ls-files", "--stage", "-z", "--", path], root) };
+}
+
+async function captureBaseline() {
+    const root = worktreeRoot();
     const records = execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
-        cwd: process.cwd(), maxBuffer: 16 * 1024 * 1024,
+        cwd: root, maxBuffer: 16 * 1024 * 1024,
     }).toString("utf8").split("\0").filter(Boolean);
     const stagedPaths = [];
     const unstagedPaths = [];
@@ -87,13 +107,55 @@ function captureBaseline() {
             }
         }
     }
+    const head = spawnSync("git", ["rev-parse", "--verify", "--quiet", "HEAD"], {
+        cwd: root, encoding: "utf8",
+    });
+    if (head.error) throw head.error;
+    if (head.status !== 0 && head.status !== 1) throw new Error(`Cannot resolve HEAD: ${head.stderr}`);
     return {
-        head: gitOutput(["rev-parse", "HEAD"]),
+        root,
+        head: head.status === 0 ? head.stdout.trim() : null,
         status: records.join("\n"),
         stagedPaths,
         unstagedPaths,
         untrackedPaths,
+        protectedState: await Promise.all([...new Set([
+            ...stagedPaths, ...unstagedPaths, ...untrackedPaths,
+        ])].map((path) => pathState(path, root))),
     };
+}
+
+async function changedProtectedPaths(baseline) {
+    const current = await Promise.all(baseline.protectedState.map(({ path }) => pathState(path, baseline.root)));
+    return current.filter((entry, index) =>
+        JSON.stringify(entry) !== JSON.stringify(baseline.protectedState[index])).map(({ path }) => path);
+}
+
+async function loadRevisions(path) {
+    if (!path) return {};
+    const root = await realpath(worktreeRoot());
+    const local = relative(root, resolve(root, path));
+    if (!local || local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local)) {
+        throw new Error("revisionPath must be inside the worktree.");
+    }
+    let content;
+    try {
+        const actual = await realpath(resolve(root, local));
+        const resolved = relative(root, actual);
+        if (resolved === ".." || resolved.startsWith(`..${sep}`) || isAbsolute(resolved)) {
+            throw new Error("revisionPath must not link outside the worktree.");
+        }
+        content = await readFile(actual, "utf8");
+    } catch (error) {
+        if (error.code === "ENOENT") return {};
+        throw error;
+    }
+    const value = JSON.parse(content);
+    if (!value || Array.isArray(value) || typeof value !== "object" ||
+        Object.entries(value).some(([key, text]) => !["define", "plan"].includes(key) || !nonempty(text))) {
+        throw new Error("Revision requests must contain only non-empty define and/or plan feedback strings.");
+    }
+    return value;
 }
 
 function orderTasks(tasks, completed) {
@@ -154,6 +216,8 @@ Never expose secrets. Stop and report ambiguous scope, missing evidence, or high
 that needs explicit user sign-off. Do not treat workflow resume as approval of new risks.
 Use durable spec, plan and task artifacts following repository conventions. Do not overwrite
 unrelated unfinished plans. Read them from disk, do not trust conversation memory.
+The supplied revisionRequestPath is workflow control input, not a spec or plan artifact.
+Do not edit, stage or commit that request file.
 Only Define may create a spec, Plan may create plan/task artifacts, and Build may update task
 status or source. In those phases record changed files, checks and outcomes, remaining work
 and decisions. Verify, Review and Ship are read-only.
@@ -192,7 +256,7 @@ and report that existing reachable commit instead of making an empty/duplicate c
 `;
 
 async function loadSpec(specPath) {
-    const root = await realpath(process.cwd());
+    const root = await realpath(worktreeRoot());
     let path;
     let content;
     try {
@@ -218,11 +282,11 @@ export const lifecycle = {
         description: "Standalone Define -> Plan -> Build -> Verify -> Review -> Ship lifecycle. " +
             "Creates the spec from the user's goal, then pauses for explicit spec and plan approval. " +
             "Uses the applicable Addy skills and packaged Review personas. Commits approved artifacts " +
-            "and verified tasks; never pushes, merges or deploys. args: { goal: string }.",
+            "and verified tasks; never pushes, merges or deploys. args: { goal: string, revisionPath?: string }.",
         phases: ["Define", "Plan", "Build", "Verify", "Review", "Ship"].map((title) => ({ title })),
         argsSchema: {
             type: "object", required: ["goal"],
-            properties: { goal: text },
+            properties: { goal: text, revisionPath: text },
         },
     },
     run: async (ctx) => {
@@ -237,11 +301,19 @@ export const lifecycle = {
             return { verdict: "NO-GO", phase, reason, needsInput, reports };
         };
         let baseline;
+        const revisionPath = ctx.args.revisionPath ??
+            `tasks/lifecycle-revisions-${fingerprint(ctx.runId).slice(0, 12)}.json`;
+        if (!nonempty(revisionPath)) throw new Error("revisionPath must be a non-empty path.");
+        const revisions = await loadRevisions(revisionPath);
+        const specRevision = revisions.define ? fingerprint(revisions.define) : "";
+        const planRevision = revisions.define || revisions.plan ? fingerprint(JSON.stringify(revisions)) : "";
         const agent = async (label, instruction, context, outputSchema = schema(), persona) => {
+            const feedback = label === "Define" || label === "Commit:spec" ?
+                (revisions.define ? { define: revisions.define } : {}) : revisions;
             const result = await ctx.agent(
                 `Engineering lifecycle: ${label}\n` + boundaries +
                 `\nAssignment:\n${instruction}\nContext (JSON):\n` +
-                JSON.stringify({ ...context, baseline }),
+                JSON.stringify({ ...context, baseline, revisions: feedback, revisionRequestPath: revisionPath }),
                 { label, schema: outputSchema, ...(persona ? { agent: persona } : {}) },
             );
             reports[label] = result;
@@ -250,12 +322,20 @@ export const lifecycle = {
         const approve = async (key, report) => {
             ctx.log(`APPROVAL REQUIRED: ${key}\n${JSON.stringify(report)}\n` +
                 `Review the artifacts before resuming run ${ctx.runId}. Resume explicitly approves ` +
-                "this exact output; do not resume automatically. For changes, start a new run.");
+                "this exact output; do not resume automatically. To request revisions, update the " +
+                `revision request file ${revisionPath} with define and/or plan feedback, then resume this same run.`);
             await ctx.pause(key);
         };
 
         ctx.phase("Define");
-        baseline = await ctx.step("worktree-baseline-v1", captureBaseline);
+        baseline = await ctx.step("worktree-baseline-v2", captureBaseline);
+        const protectedRevisionPath = baseline.protectedState.some(({ path }) => path.replaceAll("\\", "/") ===
+            relative(worktreeRoot(), resolve(worktreeRoot(), revisionPath)).replaceAll("\\", "/"));
+        if (protectedRevisionPath) {
+            return stop("Define", "revisionPath overlaps pre-existing work; choose a new request path.");
+        }
+        const beforeDefine = specRevision ?
+            await ctx.step(`before-define:${specRevision}`, captureBaseline) : baseline;
         const spec = await agent("Define",
             "Use the installed agent-skills:spec-driven-development skill for this specification phase. " +
             "If it is unavailable, return blocked and report the missing dependency; do not silently " +
@@ -273,9 +353,17 @@ export const lifecycle = {
             "The spec must state objectives, commands, project structure, code style, testing strategy, " +
             "constraints, non-goals, success criteria and open questions. Record agreed requirements " +
             "and any explicit assumptions. Do not plan tasks, implement, stage or commit. Return the " +
-            "worktree-relative specPath and cite the written file and relevant repository evidence.",
+            "worktree-root-relative specPath and cite the written file and relevant repository evidence. " +
+            "If revisions.define is supplied, revise this run's spec according to that feedback; " +
+            "preserve unrelated files and report unresolved decisions.",
             { goal: ctx.args.goal }, schema({ specPath: text }));
         if (!evidenced(spec)) return stop("Define", "Requirements unclear, spec missing, or Define blocked.");
+        const protectedChanges = await ctx.step(`define-protected-state:${specRevision}`,
+            () => changedProtectedPaths(baseline));
+        if (protectedChanges.length) {
+            spec.questions = [`Define changed pre-existing work: ${protectedChanges.join(", ")}. Restore it before continuing.`];
+            return stop("Define", "Define changed pre-existing work.");
+        }
         if (!nonempty(spec.specPath)) return stop("Define", "Define did not return a specPath.");
         const currentSpec = await loadSpec(spec.specPath);
         if (currentSpec.error) return stop("Define", currentSpec.error);
@@ -287,10 +375,13 @@ export const lifecycle = {
             spec.questions = [`The selected spec path ${currentSpec.path} already had uncommitted changes at workflow start. Choose a clean spec path or save those changes before continuing.`];
             return stop("Define", "The spec overlaps pre-existing work.");
         }
-        const definePaths = await ctx.step("define-path-observation-v1", () => {
-            const changedTrackedPaths = gitPaths(["diff", "HEAD", "--name-only", "-z"])
+        const definePaths = await ctx.step(`define-path-observation-v2:${specRevision}`, async () => {
+            const changedTrackedPaths = (beforeDefine.head ?
+                gitPaths(["diff", "HEAD", "--name-only", "-z"]) :
+                [...gitPaths(["diff", "--cached", "--name-only", "-z"]),
+                    ...gitPaths(["diff", "--name-only", "-z"])])
                 .map((path) => path.replaceAll("\\", "/"));
-            if (changedTrackedPaths.includes(specPathKey)) {
+            if (!specRevision && changedTrackedPaths.includes(specPathKey)) {
                 return {
                     specPathKey,
                     error: "Define modified an existing tracked file.",
@@ -300,6 +391,18 @@ export const lifecycle = {
             const currentUntrackedPaths = gitPaths(["ls-files", "--others", "--exclude-standard", "-z"])
                 .map((path) => path.replaceAll("\\", "/"));
             const initialDirtyPaths = new Set(dirtyBaselinePaths);
+            if (specRevision) {
+                for (const entry of beforeDefine.protectedState) {
+                    if (entry.path.replaceAll("\\", "/") === specPathKey) continue;
+                    if (JSON.stringify(await pathState(entry.path)) !== JSON.stringify(entry)) {
+                        return { specPathKey, error: "Define changed files outside its assigned spec.",
+                            question: `Define changed ${entry.path} while revising the spec.` };
+                    }
+                    initialDirtyPaths.add(entry.path.replaceAll("\\", "/"));
+                }
+            }
+            initialDirtyPaths.add(relative(worktreeRoot(),
+                resolve(worktreeRoot(), revisionPath)).replaceAll("\\", "/"));
             const unexpectedPaths = [
                 ...changedTrackedPaths,
                 ...currentUntrackedPaths,
@@ -320,11 +423,11 @@ export const lifecycle = {
             spec.questions = [definePaths.question];
             return stop("Define", definePaths.error);
         }
-        const preparedSpec = await ctx.step("prepared-spec-v2", () => currentSpec);
+        const preparedSpec = await ctx.step(`prepared-spec-v3:${specRevision}`, () => currentSpec);
         if (preparedSpec.path !== currentSpec.path || preparedSpec.content !== currentSpec.content) {
-            return stop("Define", "Spec changed since this run started. Review it in the main session and start a new run.");
+            return stop("Define", "Spec changed without a revision request. Add define feedback to revisionPath and resume this run for fresh approval.");
         }
-        await approve("approve-spec", { ...spec, spec: preparedSpec });
+        await approve(specRevision ? `approve-spec:${specRevision}` : "approve-spec", { ...spec, spec: preparedSpec });
         const specCommit = await agent("Commit:spec",
             "The exact spec has been explicitly approved. Commit only its approved changes relative " +
             "to the workflow baseline. Read the spec without modifying its content. " +
@@ -338,6 +441,7 @@ export const lifecycle = {
             "substitute generic guidance. Own the Plan stage. The user approved the supplied spec at the workflow checkpoint. Read " +
             "it and create " +
             "the plan and task list at repository-standard paths (default tasks/plan.md and tasks/todo.md). " +
+            "If revisions.plan is supplied, revise this run's planning artifacts according to that feedback. " +
             "Do not wait for approval inside this agent: the workflow pauses after your report. " +
             "If a human decision is needed, return blocked with questions instead. Do not create " +
             "external tracker items or change remote systems. " +
@@ -358,7 +462,7 @@ export const lifecycle = {
             "The entire finite task set will run sequentially after one plan approval, without between-task " +
             "human checkpoints. Identify high-risk tasks requiring additional sign-off as blocked. " +
             "Include the plan/task paths and required verification commands in the report.",
-            { goal: ctx.args.goal, spec }, schema({
+            { goal: ctx.args.goal, spec, preparedSpec }, schema({
                 tasks: { type: "array", items: taskSchema },
                 completed: {
                     type: "array", items: {
@@ -370,7 +474,7 @@ export const lifecycle = {
             }));
         const tasks = evidenced(plan) ? orderTasks(plan.tasks, plan.completed) : null;
         if (!tasks) return stop("Plan", "Plan blocked, task graph invalid or empty without verified completed work.");
-        await approve("approve-plan", plan);
+        await approve(planRevision ? `approve-plan:${planRevision}` : "approve-plan", plan);
         const planCommit = await agent("Commit:plan",
             "The exact plan and task list have been explicitly approved. Commit only these planning " +
             "artifacts relative to the workflow baseline and the completed spec commit. " +
@@ -473,6 +577,7 @@ export const lifecycle = {
         return { verdict: "GO", phase: "Ship", reports };
     },
 };
-import { execFileSync } from "node:child_process";
-import { readFile, realpath } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { lstat, readFile, readlink, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
