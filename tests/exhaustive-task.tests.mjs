@@ -183,6 +183,26 @@ test("final verification rejects findings, reopens the search and passes models 
     assert.doesNotMatch(ledger, /### Title fake-hit/);
 });
 
+test("a final verdict marked blocked without questions but with remaining work reopens the search", async (t) => {
+    const root = await temp(t);
+    const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
+    const h = harness({
+        goal: "Find every ADO integration", acceptance: "All listed", mode: "search", paths: [path],
+        ledgerPath: join(root, "ledger.md"), quietRounds: 1,
+    }, defaultHandler({
+        Work: ({ round, context }) => {
+            if (round === 1) return work([], [finding("hooks", "app.ts:1")], [], "grep");
+            if (round === 3) assert.equal(context.repair, "Split hooks per event");
+            return undefined;
+        },
+        Final: ({ round }) => round === 2
+            ? report({ status: "blocked", complete: false, remaining: "Split hooks per event", rejected: [] }) : undefined,
+    }));
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.deepEqual(h.calls.filter((call) => call.role === "Final").map((call) => call.round), [2, 3]);
+});
+
 test("rounds that change files are verified and repaired; rejected findings stay out", async (t) => {
     const f = await filesFixture(t, 2, { batchSize: 2, quietRounds: 1 });
     const h = harness(f.args, defaultHandler({

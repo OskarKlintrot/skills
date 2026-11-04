@@ -72,6 +72,10 @@ const evidenced = (report) => report?.status === "ready" && nonempty(report.summ
     Array.isArray(report.checks) && report.checks.every((check) =>
         nonempty(check?.command) && nonempty(check.evidence) &&
         ["passed", "failed", "not-run"].includes(check.outcome));
+// Verifiers sometimes report "blocked" when they mean "incomplete"; repair work is not a blocker.
+const verdict = (report) => report?.status === "blocked" && Array.isArray(report.questions) &&
+    report.questions.length === 0 && report.complete === false && nonempty(report.remaining)
+    ? { ...report, status: "ready" } : report;
 const passing = (report) => evidenced(report) && report.checks.length > 0 &&
     report.checks.every((check) => check.outcome === "passed");
 const kebab = (id) => typeof id === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id);
@@ -333,7 +337,8 @@ const verifyInstruction = "Read-only independent verification of a round that ch
     "and not a duplicate of a different ledger entry; list inaccurate finding IDs in rejected. Check the " +
     "changes against the acceptance criteria and run relevant checks (builds, tests, linters). Return complete " +
     "true only with passing checks and nothing missing (rejected findings alone do not make it incomplete); " +
-    "remaining is then \"\". Otherwise return complete false and precise, actionable remaining repair instructions.";
+    "remaining is then \"\". Otherwise return complete false and precise, actionable remaining repair " +
+    "instructions with status ready; use status blocked only when you cannot verify.";
 const finalInstruction = "Read-only final verification of the whole ledger before the workflow reports " +
     "completion; run only non-mutating checks. ledger.findings in the context is the complete ledger with " +
     "details; you do not need to read ledgerPath. Do not trust earlier agents. Check every ledger finding is " +
@@ -342,7 +347,8 @@ const finalInstruction = "Read-only final verification of the whole ledger befor
     "to spot anything still missing against the goal and acceptance. Do not redo the whole task. Return " +
     "complete true only with passing checks and nothing missing (rejected findings alone do not make it " +
     "incomplete); remaining is then \"\". Otherwise return complete false and remaining naming concretely " +
-    "what is missing and where to look; another review round follows.";
+    "what is missing and where to look; another review round follows. Missing work is not a blocker: report " +
+    "it with status ready, complete false and remaining. Use status blocked only when you cannot verify.";
 const commitInstruction = "Load agent-skills:git-workflow-and-versioning; return blocked if unavailable. " +
     "Save this independently verified round as atomic commits in each repository in changedRepos: one " +
     "commit per logical change, keeping concerns separate (for example dependency updates, behavior " +
@@ -444,9 +450,9 @@ export const exhaustiveTask = {
                 ctx.phase("Verify");
                 const final = await ctx.step(`final-v1:${round}`, async () => {
                     const current = await snapshot(plan.repos);
-                    const verification = await call(`Final:${round}:${current.fingerprint}`, finalInstruction,
+                    const verification = verdict(await call(`Final:${round}:${current.fingerprint}`, finalInstruction,
                         { round, ledger: { findings: state.findings, processedCount: state.processed.length },
-                            previousStrategies: strategies() }, verifySchema, verifyModel);
+                            previousStrategies: strategies() }, verifySchema, verifyModel));
                     const ids = state.findings.map((finding) => finding.id);
                     if (!evidenced(verification) || typeof verification.complete !== "boolean" ||
                         !list(verification.rejected) || !verification.rejected.every((id) => ids.includes(id)) ||
@@ -518,8 +524,8 @@ export const exhaustiveTask = {
                         break;
                     }
                     ctx.phase("Verify");
-                    verification = await call(`Verify:${round}:${attempt}:${current.fingerprint}`, verifyInstruction,
-                        { ...context, work }, verifySchema, verifyModel);
+                    verification = verdict(await call(`Verify:${round}:${attempt}:${current.fingerprint}`,
+                        verifyInstruction, { ...context, work }, verifySchema, verifyModel));
                     const ids = work.findings.map((finding) => finding.id);
                     if (!evidenced(verification) || typeof verification.complete !== "boolean" ||
                         !list(verification.rejected) || !verification.rejected.every((id) => ids.includes(id)) ||
