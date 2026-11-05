@@ -491,7 +491,8 @@ export const lifecycle = {
         if (specRevision && origin?.occupied) {
             return stop("Define", "The workflow-owned spec revision path overlaps pre-existing work.", true);
         }
-        const spec = specRevision && !missingInitialSpec && origin ? await agent("Define", defineInstruction +
+        const revisingSpec = Boolean(specRevision && !missingInitialSpec && origin);
+        const spec = revisingSpec ? await agent("Define", defineInstruction +
             " Use sourcePath as read-only reference. Write the revised specification only to " +
             "revisionTarget; this is the pinned workflow-owned revision path. If it differs from " +
             "sourcePath, create a complete revised copy and preserve the original source.",
@@ -572,7 +573,7 @@ export const lifecycle = {
         }
         if (!specified(spec)) return stop("Define", "Requirements unclear, spec missing, or Define blocked.");
         if (currentSpec.error) return stop("Define", currentSpec.error);
-        const ownedSpec = specRevision && origin ? origin.revisionTarget.replaceAll("\\", "/") :
+        const ownedSpec = revisingSpec ? origin.revisionTarget.replaceAll("\\", "/") :
             origin?.sourcePath.replaceAll("\\", "/");
         const wrongSpecPath = await ctx.step(`define-owned-spec-observation-v1:${specRevision}`,
             () => ownedSpec !== specPathKey);

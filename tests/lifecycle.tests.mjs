@@ -540,6 +540,40 @@ test("feedback on a tracked source spec creates a pinned copy and preserves the 
     });
 });
 
+test("clarifying a blocked Define with an existing source pins the selected spec", async () => {
+    await inRepository(async (_, git) => {
+        await writeFile("source.md", "# Existing source");
+        git("add", "source.md");
+        git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "-m", "docs: Add source specification");
+        const h = harness({
+            Define: report({ status: "blocked", specPath: "source.md",
+                questions: ["Confirm the separate security plan"] }),
+            Plan: planReport({ artifactPaths: ["plan.md"], tasks: [task("first")], completed: [] }),
+        });
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            const context = JSON.parse(prompt.split("Context (JSON):\n")[1]);
+            if (options.label === "Define" && context.clarifying) {
+                return report({ specPath: "source.md" });
+            }
+            if (options.label === "Plan") await writeFile("plan.md", "# Security plan");
+            return result;
+        };
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "NO-GO");
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        await mkdir("tasks");
+        await writeFile(context.revisionRequestPath,
+            JSON.stringify({ define: "Use the approved spec and a separate security plan" }));
+        await approveSpec(h);
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+        assert.equal(h.calls.filter((call) => call.label === "Define").length, 2);
+        assert.equal(await readFile("source.md", "utf8"), "# Existing source");
+    });
+});
+
 test("a spec revision cannot switch away from its original workflow-owned path", async () => {
     await inRepository(async () => {
         const h = generatedSpecHarness();

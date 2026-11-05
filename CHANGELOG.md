@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.2] - 2026-11-05
+
+### Fixed
+
+- Lifecycle clarification can select an existing tracked specification after a
+  blocked Define response. Path ownership now checks the selected source until
+  the revision step actually runs at the pinned copy, instead of permanently
+  blocking recovery because that copy was never created.
+
 ## [0.10.1] - 2026-11-05
 
 ### Fixed
