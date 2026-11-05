@@ -770,15 +770,17 @@ test("lifecycle uses the required skills and specialist personas without fixing 
     await approvePlan(h);
     await lifecycle.run(h.ctx);
     const skills = {
-        Define: ["agent-skills:spec-driven-development", "agent-skills:git-workflow-and-versioning"],
-        Plan: ["agent-skills:planning-and-task-breakdown", "agent-skills:git-workflow-and-versioning"],
-        "Build:first": ["agent-skills:incremental-implementation", "agent-skills:test-driven-development",
-            "agent-skills:git-workflow-and-versioning"],
-        Verify: ["agent-skills:test-driven-development", "agent-skills:git-workflow-and-versioning"],
-        "Review:code": ["agent-skills:code-review-and-quality"],
-        "Review:security": ["agent-skills:security-and-hardening"],
-        "Review:tests": ["agent-skills:test-driven-development"],
-        Ship: ["agent-skills:shipping-and-launch", "agent-skills:git-workflow-and-versioning"],
+        Define: ["spec-driven-development", "git-workflow-and-versioning"],
+        Plan: ["planning-and-task-breakdown", "git-workflow-and-versioning"],
+        Build: ["incremental-implementation", "test-driven-development",
+            "git-workflow-and-versioning"],
+        Verify: ["test-driven-development", "git-workflow-and-versioning"],
+        "Review:code": ["code-review-and-quality"],
+        "Review:security": ["security-and-hardening"],
+        "Review:tests": ["test-driven-development"],
+        Ship: ["shipping-and-launch", "git-workflow-and-versioning"],
+        "Commit:spec": ["git-workflow-and-versioning"],
+        "Commit:plan": ["git-workflow-and-versioning"],
     };
     const personas = {
         "Review:code": "oskar-tools:code-reviewer",
@@ -786,7 +788,10 @@ test("lifecycle uses the required skills and specialist personas without fixing 
         "Review:tests": "oskar-tools:test-engineer",
     };
     for (const call of h.calls) {
-        for (const skill of skills[call.label] ?? []) assert.ok(call.prompt.includes(skill), call.label);
+        const phase = call.label.startsWith("Build:") ? "Build" : call.label;
+        assert.ok(Object.hasOwn(skills, phase), `Missing skill expectations for ${call.label}`);
+        assert.doesNotMatch(call.prompt, /agent-skills:/, call.label);
+        for (const skill of skills[phase]) assert.ok(call.prompt.includes(skill), call.label);
         assert.equal(call.agent, personas[call.label], call.label);
         assert.equal(call.model, undefined, call.label);
     }
@@ -965,7 +970,7 @@ test("phase prompts route unresolved questions to the user and retain lifecycle 
     assert.match(h.calls[0].prompt, /Use phase-specific installed skills and/);
     for (const label of ["Commit:spec", "Commit:plan", "Build:first", "Build:second"]) {
         const prompt = h.calls.find((call) => call.label === label).prompt;
-        assert.match(prompt, /agent-skills:git-workflow-and-versioning/);
+        assert.match(prompt, /installed git-workflow-and-versioning skill/);
         assert.match(prompt, /do not prohibit creating an appropriate feature branch or commits/i);
     }
     assert.match(h.calls.find((c) => c.label === "Define").prompt, /write a complete specification/);
@@ -1122,7 +1127,7 @@ test("prompts use Git workflow guidance and enforce shared-worktree safety", asy
     await lifecycle.run(h.ctx);
     for (const call of h.calls) {
         assert.match(call.prompt, /Do not delegate/);
-        assert.match(call.prompt, /agent-skills:git-workflow-and-versioning/);
+        assert.match(call.prompt, /installed git-workflow-and-versioning skill/);
         assert.match(call.prompt, /pre-existing/);
         assert.doesNotMatch(call.prompt, /do not require or invoke external skills/i);
         const context = JSON.parse(call.prompt.split("Context (JSON):\n")[1]);
