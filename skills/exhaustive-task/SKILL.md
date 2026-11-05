@@ -13,7 +13,9 @@ The workflow replaces asking an agent "did you find everything?" until it stops
 finding things. It processes small batches and records results in a ledger it
 owns: unit rounds (a batch of files or repositories each), then review rounds
 with changing search strategies until `quietRounds` consecutive review rounds
-find no new findings or changes; new locations on known findings are recorded but do not count as progress. A final read-only verification then checks the ledger and can
+find no new progress. New findings and changes always count as progress; new
+locations on known findings also count when the goal requires every occurrence.
+A final read-only verification then checks the ledger and can
 reopen the search. Rounds that change files are verified; rounds that only
 record findings are not, which keeps discovery cheap. The workflow has no commit
 step: changes stay uncommitted unless the goal asks workers to commit them.
@@ -22,26 +24,42 @@ step: changes stay uncommitted unless the goal asks workers to commit them.
 
 1. Read repository instructions and relevant context. Establish the exact goal
    and checkable acceptance criteria: what counts as a finding or a finished change,
-   and which details each ledger entry needs. Ask unresolved questions one at a
-   time with `ask_user`; do not launch with ambiguous requirements.
+   and which details each ledger entry needs. Choose `coverage` from the goal:
+   - `findings`: unique kinds, for example a catalogue of UI component types.
+     Another location of a known type is saved but does not extend the search.
+   - `occurrences`: every instance, for example every button or replacing Y
+     everywhere. Another distinct location extends the search. Require precise,
+     consistent source anchors that distinguish occurrences within one file.
+   Select this automatically when the goal is clear; ask only when the distinction
+   is ambiguous. Explain it with the user's own task, not parameter names alone.
+   Ask unresolved questions one at a time with `ask_user`; do not launch with
+   ambiguous requirements.
 2. Choose the mode and propose it to the user:
-   - `files`: work lives in files of the current repository. `paths` are
+   - `files`: explicit file-by-file coverage of the current repository. `paths` are
      repository-relative (`["."]` for everything). Requires the worktree root as
      working directory.
    - `repos`: the same task per Git repository under absolute `paths`, for
      example "update packages in every repository under C:\repos".
-   - `search`: no enumerable units, for example "find every integration" or
-     design versus implementation. Usually the cheapest choice for discovery.
+   - `search`: semantic discovery, for example "find every integration", identify
+     UI components in a design, or design versus implementation. Prefer this for
+     discovery even when the sources are files: files are not the findings.
+     Usually the cheapest choice for discovery.
      Sources workers cannot reach, such as a canvas, must first be exported to a
      file and named in the goal.
+   A single scoped file still receives a full unit pass in `files` mode, followed
+   by varied review rounds and final verification; one file never means one round.
 3. Propose an absolute `ledgerPath` and ask the user to confirm or change it:
    in the repository when the ledger is a deliverable (every productive round
    then changes the files, which costs a Verify agent per productive round),
    otherwise in the session's `files/` folder. An existing ledger for the same
-   goal and mode continues where it stopped; use a new path for a fresh start.
-4. Ask with `ask_user` about the batch size: propose 5 for `files` and `search`
-   and 1 for `repos`, or the user's own number. In `search` mode it limits
-   changes per round, not findings.
+   goal, mode and coverage continues where it stopped; use a new path for a fresh
+   start or different coverage. Legacy ledgers use `findings` coverage.
+4. Use the user's batch size if supplied; otherwise use 5 for `files` and `search`
+   and 1 for `repos`. Do not ask a separate batch-size question. Batch size is a
+   workload setting, not a completeness limit: it controls files/repositories per
+   unit round, or changes per review round. Findings are never capped. For
+   read-only `search`, it has no effect; omit it from the launch summary instead
+   of asking about files per batch.
 5. Ask with `ask_user` which models to use, unless the user already said. Propose
    leaving both to runtime preferences, or a cheaper `model` for workers with an
    optional stronger `verifyModel` for verification. Never
@@ -72,8 +90,10 @@ step: changes stay uncommitted unless the goal asks workers to commit them.
 8. Show `git status --porcelain` for affected repositories. The workflow records
    dirty files at start as user work that workers must not revert or commit; ask
    whether that is acceptable or whether the user wants to commit them first.
-9. Present goal, acceptance, mode, paths, ledger, batch size, models, ceiling and
-   the commit choice for explicit launch approval using `ask_user`. No pushes,
+9. Present goal, acceptance, mode, coverage in plain language, paths, ledger,
+   batch size when relevant (with its meaning and the option to override it),
+   models, ceiling and the commit choice for explicit launch approval using
+   `ask_user`. No pushes,
    merges or deployments are authorized. If approval cannot be obtained
    interactively, stop.
 
@@ -86,6 +106,7 @@ After approval, run the `exhaustive-task` dynamic workflow with:
   "goal": "<agreed task>",
   "acceptance": "<concrete criteria and required checks>",
   "mode": "files",
+  "coverage": "occurrences",
   "paths": ["."],
   "ledgerPath": "<absolute path>",
   "batchSize": 5,
@@ -93,7 +114,9 @@ After approval, run the `exhaustive-task` dynamic workflow with:
 }
 ```
 
-The numbers are illustrative. Use the user's answers; omit `maxRounds` for no
+The numbers and coverage are illustrative. Always pass the coverage selected
+from the agreed goal; direct invocation defaults to `findings` for compatibility.
+Use the user's answers; omit `maxRounds` for no
 ceiling and omit `model`/`verifyModel` to use runtime preferences. If dynamic
 workflows are unavailable, report the limitation; do not silently substitute a
 single agent.

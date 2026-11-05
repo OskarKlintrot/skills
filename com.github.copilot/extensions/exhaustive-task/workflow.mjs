@@ -10,6 +10,7 @@ const git = async (cwd, args, env) => (await exec("git", args,
     { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, ...(env ? { env } : {}) })).stdout;
 
 const modes = ["files", "repos", "search"];
+const coverages = ["findings", "occurrences"];
 const defaultBatch = { files: 5, repos: 1, search: 5 };
 const maxAttempts = 3;
 const marker = "<!-- exhaustive-task-state";
@@ -151,6 +152,8 @@ async function prepare(args) {
         if (!nonempty(args?.[key])) throw new Error(`${key} must be a non-empty string.`);
     }
     if (!modes.includes(args.mode)) throw new Error(`mode must be one of ${modes.join(", ")}.`);
+    const coverage = args.coverage === undefined ? "findings" : args.coverage;
+    if (!coverages.includes(coverage)) throw new Error(`coverage must be one of ${coverages.join(", ")}.`);
     const paths = args.paths ?? [];
     if (!list(paths)) throw new Error("paths must be an array of non-empty strings.");
     if (args.mode !== "search" && !paths.length) throw new Error(`paths is required in ${args.mode} mode.`);
@@ -182,7 +185,7 @@ async function prepare(args) {
         if (!units.length && !(await loadLedger(ledgerPath, args, ledgerScope))?.processed.length) {
             throw new Error("No tracked or non-ignored files match paths.");
         }
-        return { batchSize, quietRounds, maxRounds, ledgerPath, scope: ledgerScope, repos: [root], root, units };
+        return { coverage, batchSize, quietRounds, maxRounds, ledgerPath, scope: ledgerScope, repos: [root], root, units };
     }
     if (args.mode === "repos" && !paths.every(isAbsolute)) throw new Error("repos mode paths must be absolute.");
     const roots = paths.length ? paths.map((path) => resolve(path)) : [process.cwd()];
@@ -191,7 +194,7 @@ async function prepare(args) {
     const repos = [...new Map(found.map((repo) => [pathKey(repo), repo])).values()].sort();
     if (!repos.length) throw new Error("No Git repositories found under paths.");
     const ledgerScope = [...new Set(roots.map(pathKey))].sort();
-    return { batchSize, quietRounds, maxRounds, ledgerPath, scope: ledgerScope, repos,
+    return { coverage, batchSize, quietRounds, maxRounds, ledgerPath, scope: ledgerScope, repos,
         units: args.mode === "repos" ? repos : [] };
 }
 
@@ -277,6 +280,9 @@ async function loadLedger(path, args, scope) {
     if (state.version !== 1 || state.goal !== args.goal || state.mode !== args.mode || state.acceptance !== args.acceptance) {
         throw new Error("ledgerPath belongs to a different goal, acceptance or mode; choose another path.");
     }
+    if ((state.coverage ?? "findings") !== (args.coverage ?? "findings")) {
+        throw new Error("ledgerPath belongs to different coverage; keep its coverage or choose another path.");
+    }
     if (JSON.stringify(state.scope) !== JSON.stringify(scope)) {
         throw new Error("ledgerPath belongs to a different repository or paths; choose another path.");
     }
@@ -288,6 +294,7 @@ function render(state, total) {
         "# Exhaustive task ledger", "",
         "Written by the exhaustive-task workflow. Do not edit; start a new run to continue.", "",
         `**Goal:** ${state.goal}`, "", `**Acceptance:** ${state.acceptance}`, "",
+        `**Coverage:** ${state.coverage ?? "findings"}`, "",
         `**Progress:** ${state.processed.length}/${total} units processed, ${state.findings.length} findings.`, "",
         `## Findings (${state.findings.length})`, "",
     ];
@@ -334,14 +341,14 @@ function apply(state, result, run) {
     for (const finding of result.findings) {
         const existing = state.findings.find((entry) => entry.id === finding.id);
         if (existing) {
-            const added = finding.locations.filter((location) => !existing.locations.includes(location));
+            const added = [...new Set(finding.locations)].filter((location) => !existing.locations.includes(location));
             newLocations += added.length;
             existing.locations.push(...added);
             // Repairs requested by verification restate the whole finding; other rounds only add locations.
             if (result.replace?.includes(finding.id)) {
-                Object.assign(existing, { title: finding.title, details: finding.details, locations: [...finding.locations] });
+                Object.assign(existing, { title: finding.title, details: finding.details, locations: [...new Set(finding.locations)] });
             }
-        } else state.findings.push(structuredClone(finding));
+        } else state.findings.push({ ...structuredClone(finding), locations: [...new Set(finding.locations)] });
     }
     if (result.batch) state.processed.push(...result.batch);
     if (result.changes.length) state.changes.push({ run, round: result.round, items: result.changes });
@@ -370,7 +377,13 @@ Do not change remote systems. Do not install tools or dependencies unless the go
 Stop as blocked for ambiguous requirements, unavailable required checks or new high-risk decisions.
 Finding IDs are stable semantic kebab-case IDs. When something already exists in ledger.findings,
 reuse its ID (adding locations) instead of creating a duplicate. Never re-add IDs in rejectedFindings:
-verification found them inaccurate. When repair is supplied, ledger.findings includes details; to correct
+verification found them inaccurate. coverage "findings" inventories unique kinds: new locations of a
+known finding are saved but do not extend the search. coverage "occurrences" requires every distinct
+occurrence: new locations also extend the search. Use precise, consistent source locations (file and
+line or another stable source anchor), distinguishing occurrences within the same file. Reuse an
+existing location's representation; do not manufacture progress by rewording it.
+Batch size never limits findings. Even one scoped file gets review rounds and final verification.
+When repair is supplied, ledger.findings includes details; to correct
 an existing finding, return it with the same ID and its complete corrected title, locations and details,
 which then replace the ledger entry. Omit findings you are not correcting.
 `;
@@ -417,17 +430,20 @@ export const exhaustiveTask = {
             "repos: batches of Git repositories under paths; search: no fixed units. After the units, review " +
             "rounds with varying strategies continue until quietRounds consecutive rounds find nothing new; " +
             "a final read-only verification then checks the ledger and can reopen the search. Rounds that " +
+            "only add locations extend the search with coverage occurrences, but not findings (the default). Rounds that " +
             "change files are verified; workers commit only if the goal asks for it. Findings accumulate in a " +
             "workflow-owned Markdown ledger; rerunning with the same ledgerPath continues after processed units. " +
             "model sets the worker model, verifyModel the verification model. Use the exhaustive-task skill for preparation " +
             "and approvals. args: { goal: string, acceptance: string, mode: \"files\"|\"repos\"|\"search\", " +
-            "paths?: string[], ledgerPath: string, batchSize?: number, quietRounds?: number, maxRounds?: number, " +
+            "paths?: string[], ledgerPath: string, coverage?: \"findings\"|\"occurrences\", " +
+            "batchSize?: number, quietRounds?: number, maxRounds?: number, " +
             "model?: string, verifyModel?: string }.",
         phases: ["Work", "Verify"].map((title) => ({ title })),
         argsSchema: {
             type: "object", required: ["goal", "acceptance", "mode", "ledgerPath"],
             properties: {
                 goal: text, acceptance: text, mode: { type: "string", enum: modes }, paths: strings,
+                coverage: { type: "string", enum: coverages },
                 ledgerPath: text, batchSize: { type: "integer" }, quietRounds: { type: "integer" },
                 maxRounds: { type: "integer" }, model: text, verifyModel: text,
             },
@@ -450,6 +466,7 @@ export const exhaustiveTask = {
             version: 1, goal: ctx.args.goal, mode: ctx.args.mode, acceptance: ctx.args.acceptance, scope: config.scope,
             processed: [], findings: [], changes: [], reviews: [],
         };
+        state.coverage ??= config.coverage;
         const todo = plan.units.filter((unit) => !state.processed.includes(unit));
         // Continued ledgers may cover other paths or since-deleted files; count everything the ledger covers.
         const total = new Set([...plan.units, ...state.processed]).size;
@@ -475,7 +492,7 @@ export const exhaustiveTask = {
         };
         const call = (label, instruction, context, schema, model) => ctx.agent(
             `${label}\n${boundaries}\nAssignment:\n${instruction}\nContext (JSON):\n` + JSON.stringify({
-                goal: ctx.args.goal, acceptance: ctx.args.acceptance, mode: ctx.args.mode,
+                goal: ctx.args.goal, acceptance: ctx.args.acceptance, mode: ctx.args.mode, coverage: config.coverage,
                 repos: plan.repos, paths: ctx.args.paths ?? [], ledgerPath: config.ledgerPath,
                 batchSize: config.batchSize, preExisting: plan.preExisting, ...context,
             }),
@@ -654,8 +671,8 @@ export const exhaustiveTask = {
             if (batch) cursor += batch.length;
             else {
                 reviews.push({ round, strategy: result.strategy, newFindings, newLocations, changes: result.changes.length });
-                // New locations are kept but are not progress; models can almost always find one more.
-                quiet = newFindings.length || result.changes.length ? 0 : quiet + 1;
+                quiet = newFindings.length || result.changes.length ||
+                    (config.coverage === "occurrences" && newLocations > 0) ? 0 : quiet + 1;
                 repair = null;
             }
             await write(state);

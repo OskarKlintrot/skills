@@ -110,7 +110,8 @@ test("registered workflow declares its contract without resource limits", () => 
 test("invalid arguments fail before agents are spawned", async (t) => {
     const f = await filesFixture(t);
     const invalid = [
-        { mode: "everything" }, { batchSize: 0 }, { quietRounds: -1 }, { maxRounds: 1.5 },
+        { mode: "everything" }, { coverage: "everything" }, { coverage: null }, { coverage: 1 },
+        { batchSize: 0 }, { quietRounds: -1 }, { maxRounds: 1.5 },
         { ledgerPath: "ledger.md" }, { paths: [] }, { paths: ["../outside"] }, { paths: [".git"] },
         { paths: ["nothing-here"] }, { mode: "repos", paths: ["relative"] }, { model: "" }, { verifyModel: 3 },
     ];
@@ -353,12 +354,12 @@ test("repos mode discovers repositories and processes one per round by default",
     assert.deepEqual(h.calls[0].context.repos, [a, b]);
 });
 
-test("review rounds that only add locations to known findings count as quiet", async (t) => {
+test("findings coverage saves new locations but counts those review rounds as quiet", async (t) => {
     const root = await temp(t);
     const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
     const h = harness({
         goal: "Find every ADO integration", acceptance: "All listed", mode: "search", paths: [path],
-        ledgerPath: join(root, "ledger.md"), quietRounds: 2,
+        ledgerPath: join(root, "ledger.md"), coverage: "findings", quietRounds: 2,
     }, defaultHandler({
         Work: ({ round }) => round === 1 ? work([], [finding("sdk", "a.cs:1")], [], "grep")
             : round === 2 ? work([], [finding("sdk", "b.cs:2")], [], "trace callers") : undefined,
@@ -372,6 +373,126 @@ test("review rounds that only add locations to known findings count as quiet", a
     assert.equal(result.round, 3);
     assert.deepEqual(result.findings[0].locations, ["a.cs:1", "b.cs:2"]);
     assert.match(await readFile(join(root, "ledger.md"), "utf8"), /trace callers \(new: none; new locations: 1/);
+});
+
+test("occurrences coverage extends the search for distinct locations, not repeated reports", async (t) => {
+    const root = await temp(t);
+    const path = await repo(join(root, "repo"), { "app.ts": "Button Button Button\n" });
+    const h = harness({
+        goal: "Find every button", acceptance: "Every occurrence has a source anchor", mode: "search",
+        coverage: "occurrences", paths: [path], ledgerPath: join(root, "ledger.md"), quietRounds: 2,
+    }, defaultHandler({
+        Work: ({ round }) => {
+            assert.ok(round <= 6, "Repeated locations must not extend the search");
+            const location = round === 1 ? "app.ts:1:1" : round < 4 ? "app.ts:1:8" : "app.ts:1:15";
+            return work([], [{ ...finding("button", location), locations: [location, location] }], [], `strategy ${round}`);
+        },
+    }));
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.equal(result.round, 6);
+    assert.deepEqual(result.findings[0].locations, ["app.ts:1:1", "app.ts:1:8", "app.ts:1:15"]);
+    assert.equal(h.calls.filter((call) => call.role === "Final").length, 1);
+    assert.ok(h.calls.every((call) => call.context.coverage === "occurrences"));
+    const ledger = await readFile(join(root, "ledger.md"), "utf8");
+    assert.match(ledger, /\*\*Coverage:\*\* occurrences/);
+    assert.match(ledger, /Round 2: strategy 2 \(new: none; new locations: 1/);
+    assert.match(ledger, /Round 3: strategy 3 \(new: none; new locations: 0/);
+});
+
+test("one scoped file receives reviews that repair a missed edit, verification and a final check", async (t) => {
+    const root = await temp(t);
+    const path = await repo(join(root, "repo"), { "app.txt": "Y Y\n" });
+    inside(path);
+    const h = harness({
+        goal: "Replace Y everywhere in app.txt", acceptance: "No Y remains in app.txt", mode: "files",
+        coverage: "occurrences", paths: ["app.txt"], ledgerPath: join(root, "ledger.md"),
+    }, defaultHandler({
+        Work: async ({ context, round }) => {
+            if (context.batch.length) {
+                assert.deepEqual(context.batch, ["app.txt"]);
+                await writeFile(join(path, "app.txt"), "X Y\n");
+                return work(context.batch, [], ["app.txt: replaced first Y"]);
+            }
+            if (round === 2) {
+                assert.equal(await readFile(join(path, "app.txt"), "utf8"), "X Y\n");
+                await writeFile(join(path, "app.txt"), "X X\n");
+                return work([], [], ["app.txt: replaced remaining Y"], "search remaining occurrences");
+            }
+            return undefined;
+        },
+        Final: async () => {
+            assert.equal(await readFile(join(path, "app.txt"), "utf8"), "X X\n");
+            return undefined;
+        },
+    }));
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.equal(result.round, 4);
+    assert.equal(h.calls.filter((call) => call.role === "Work" && call.context.batch.length).length, 1);
+    assert.equal(h.calls.filter((call) => call.role === "Work" && !call.context.batch.length).length, 3);
+    assert.equal(h.calls.filter((call) => call.role === "Verify").length, 2);
+    assert.equal(h.calls.filter((call) => call.role === "Final").length, 1);
+    assert.ok(h.calls.every((call) => call.context.coverage === "occurrences"));
+});
+
+test("read-only search findings are not capped by batch size", async (t) => {
+    const root = await temp(t);
+    const path = await repo(join(root, "repo"), { "app.ts": "x\n" });
+    const hits = Array.from({ length: 8 }, (_, index) => finding(`component-${index}`, `app.ts:${index + 1}`));
+    const h = harness({
+        goal: "List unique UI component types", acceptance: "Every type is listed", mode: "search",
+        paths: [path], ledgerPath: join(root, "ledger.md"), batchSize: 1,
+    }, defaultHandler({
+        Work: ({ context, round }) => {
+            assert.deepEqual(context.batch, []);
+            assert.equal(context.coverage, "findings");
+            return round === 1 ? work([], hits, [], "inspect design") : undefined;
+        },
+    }));
+    const result = await h.run();
+    assert.equal(result.status, "complete");
+    assert.equal(result.findings.length, 8);
+    assert.equal(result.round, 3);
+    assert.equal(h.calls.filter((call) => call.role === "Verify").length, 0);
+});
+
+test("occurrences coverage survives continuation and rejects incompatible coverage", async (t) => {
+    const f = await filesFixture(t, 2, { batchSize: 1, coverage: "occurrences" });
+    const first = await harness(f.args, defaultHandler({
+        Work: ({ context, round }) => round === 1 ? work(context.batch, [finding("button", "src/a.txt:1")])
+            : report({ status: "blocked", processed: [], findings: [], changes: [], strategy: "", questions: ["Which design?"] }),
+    })).run();
+    assert.equal(first.status, "blocked");
+    const second = harness(f.args, defaultHandler());
+    assert.equal((await second.run()).status, "complete");
+    assert.deepEqual(second.calls[0].context.batch, ["src/b.txt"]);
+    assert.ok(second.calls.every((call) => call.context.coverage === "occurrences"));
+    assert.match(await readFile(f.args.ledgerPath, "utf8"), /"coverage": "occurrences"/);
+    for (const coverage of [undefined, "findings"]) {
+        const incompatible = harness({ ...f.args, coverage }, defaultHandler());
+        await assert.rejects(incompatible.run, /different coverage/);
+        assert.equal(incompatible.calls.length, 0);
+    }
+});
+
+test("legacy ledgers retain findings coverage and cannot silently become occurrence searches", async (t) => {
+    const f = await filesFixture(t, 1);
+    assert.equal((await harness(f.args, defaultHandler()).run()).status, "complete");
+    const content = await readFile(f.args.ledgerPath, "utf8");
+    const marker = "<!-- exhaustive-task-state";
+    const start = content.lastIndexOf(marker);
+    const state = JSON.parse(content.slice(start + marker.length, content.indexOf("-->", start)));
+    delete state.coverage;
+    await writeFile(f.args.ledgerPath, `${marker}\n${JSON.stringify(state)}\n-->\n`);
+    const incompatible = harness({ ...f.args, coverage: "occurrences" }, defaultHandler());
+    await assert.rejects(incompatible.run, /different coverage/);
+    assert.equal(incompatible.calls.length, 0);
+    const continued = harness({ ...f.args, coverage: "findings" }, defaultHandler());
+    assert.equal((await continued.run()).status, "complete");
+    assert.ok(continued.calls.every((call) => call.context.coverage === "findings"));
+    assert.ok(continued.calls.filter((call) => call.role === "Work").every((call) => !call.context.batch.length));
+    assert.match(await readFile(f.args.ledgerPath, "utf8"), /"coverage": "findings"/);
 });
 
 test("search mode has no units and stops after the configured quiet review rounds", async (t) => {
