@@ -43,14 +43,16 @@ function schema(extra = {}) {
 
 const verdictSchema = { type: "string", enum: ["GO", "NO-GO"] };
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
-const passingChecks = (checks) => Array.isArray(checks) && checks.every((check) =>
-    check.outcome === "passed" && nonempty(check.command) && nonempty(check.evidence));
-const evidenced = (report) => report?.status === "ready" && nonempty(report.summary) &&
+const evidenced = (report, { allowNotRun = false } = {}) => report?.status === "ready" && nonempty(report.summary) &&
     Array.isArray(report.evidence) && report.evidence.length > 0 && report.evidence.every(nonempty) &&
-    passingChecks(report.checks) && Array.isArray(report.questions) && report.questions.length === 0;
+    Array.isArray(report.checks) && report.checks.every((check) =>
+        (check.outcome === "passed" || (allowNotRun && check.outcome === "not-run")) &&
+        nonempty(check.command) && nonempty(check.evidence)) &&
+    Array.isArray(report.questions) && report.questions.length === 0;
 const verified = (report) => evidenced(report) && report.checks.length > 0;
 const committed = (report) => verified(report) && typeof report.commit === "string" &&
     /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(report.commit);
+const specified = (report) => evidenced(report, { allowNotRun: true });
 const blocking = new Set(["Critical", "High", "Required"]);
 
 function worktreeRoot() {
@@ -426,7 +428,7 @@ export const lifecycle = {
         const initialSafety = await ctx.step("initial-define-safety-v1", async () => {
             if (currentHead(baseline.root) !== baseline.head) return "Define changed HEAD before specification approval.";
             if ((await changedProtectedPaths(baseline)).length) return "Define changed pre-existing work.";
-            const source = evidenced(initialSpec) && nonempty(initialSpec.specPath) ?
+            const source = specified(initialSpec) && nonempty(initialSpec.specPath) ?
                 await loadSpec(initialSpec.specPath) : null;
             const allowed = new Set([...baseline.stagedPaths, ...baseline.unstagedPaths,
                 ...baseline.untrackedPaths, relative(baseline.root, resolve(baseline.root, revisionPath))]
@@ -456,14 +458,14 @@ export const lifecycle = {
             }
         }
         const missingInitialSpec = await ctx.step(`initial-spec-validity-v1:${specRevision}`, async () =>
-            !evidenced(initialSpec) || !nonempty(initialSpec.specPath) ||
+            !specified(initialSpec) || !nonempty(initialSpec.specPath) ||
             Boolean((await loadSpec(initialSpec.specPath)).error));
         const selectedSpec = specRevision && missingInitialSpec ?
             await agent("Define", defineInstruction, { goal: ctx.args.goal, clarifying: true },
                 schema({ specPath: text })) : initialSpec;
         const selectedSource = nonempty(selectedSpec?.specPath) ? await loadSpec(selectedSpec.specPath) :
             { error: "Define did not return a specPath." };
-        const origin = evidenced(selectedSpec) && !selectedSource.error ?
+        const origin = specified(selectedSpec) && !selectedSource.error ?
             await ctx.step("spec-origin-v1", async () => {
                 const source = selectedSource;
                 const sourceKey = source.path.replaceAll("\\", "/");
@@ -498,7 +500,7 @@ export const lifecycle = {
         }
         const currentSpec = nonempty(spec?.specPath) ? await loadSpec(spec.specPath) :
             { error: "Define did not return a specPath." };
-        const specPathKey = evidenced(spec) && !currentSpec.error ?
+        const specPathKey = specified(spec) && !currentSpec.error ?
             currentSpec.path.replaceAll("\\", "/") : "";
         const dirtyBaselinePaths = new Set([
             ...baseline.stagedPaths, ...baseline.unstagedPaths, ...baseline.untrackedPaths,
@@ -556,7 +558,7 @@ export const lifecycle = {
             reports.Define = { ...spec, questions: [definePaths.question] };
             return stop("Define", definePaths.error, true);
         }
-        if (!evidenced(spec)) return stop("Define", "Requirements unclear, spec missing, or Define blocked.");
+        if (!specified(spec)) return stop("Define", "Requirements unclear, spec missing, or Define blocked.");
         if (currentSpec.error) return stop("Define", currentSpec.error);
         const ownedSpec = specRevision && origin ? origin.revisionTarget.replaceAll("\\", "/") :
             origin?.sourcePath.replaceAll("\\", "/");

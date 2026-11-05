@@ -801,6 +801,43 @@ test("a goal alone starts lifecycle definition without external spec or baseline
     assert.deepEqual(lifecycle.meta.argsSchema.required, ["goal"]);
 });
 
+test("Define accepts checks not applicable until later phases", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        h.ctx.args.goal = "Build a feature";
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            const result = await agent(prompt, options);
+            return options.label === "Define" ? {
+                ...result,
+                checks: [
+                    check,
+                    { command: "Run implementation tests", outcome: "not-run", evidence: "Implementation has not started in Define." },
+                ],
+            } : result;
+        };
+
+        await approveSpec(h);
+        assert.deepEqual(h.calls.map((call) => call.label), ["Define"]);
+        assert.match(h.logs[0], /APPROVAL REQUIRED: approve-spec/);
+    });
+});
+
+test("Define still rejects failed checks", async () => {
+    const h = harness({
+        Define: report({
+            specPath: join("tests", "fixtures", "lifecycle-spec.md"),
+            checks: [{ ...check, outcome: "failed", evidence: "Spec validation failed." }],
+        }),
+    });
+
+    const result = await lifecycle.run(h.ctx);
+    assert.equal(result.verdict, "NO-GO");
+    assert.equal(result.phase, "Define");
+    assert.match(result.reason, /Requirements unclear/);
+    assert.deepEqual(h.calls.map((call) => call.label), ["Define"]);
+});
+
 test("workflow uses the same public name as its trigger skill and command", () => {
     assert.equal(lifecycle.meta.name, "addy-lifecycle");
     assert.match(lifecycle.meta.description, /Standalone Define -> Plan -> Build -> Verify -> Review -> Ship/);
