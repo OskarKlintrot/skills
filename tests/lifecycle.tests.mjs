@@ -843,6 +843,71 @@ test("Define still rejects failed checks", async () => {
     assert.deepEqual(h.calls.map((call) => call.label), ["Define"]);
 });
 
+test("inapplicable checks do not block later lifecycle phases", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        const agent = h.ctx.agent;
+        h.ctx.agent = async (prompt, options) => {
+            assert.ok(options.schema.properties.checks.items.properties.outcome.enum.includes("not-applicable"));
+            assert.match(prompt, /Use outcome not-applicable only/);
+            if (options.label.startsWith("Commit:")) {
+                assert.match(prompt, /Git verification is still required/);
+            }
+            const result = await agent(prompt, options);
+            return options.label === "Define" ? result : {
+                ...result,
+                checks: [
+                    check,
+                    {
+                        command: "Implementation tests",
+                        outcome: "not-applicable",
+                        evidence: "This check is outside the phase's required verification; applicable checks passed.",
+                    },
+                ],
+            };
+        };
+        await approveSpec(h);
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan/);
+        const result = await lifecycle.run(h.ctx);
+        assert.equal(result.verdict, "GO");
+        assert.ok(h.calls.some((call) => call.label === "Ship"));
+    });
+});
+
+test("later lifecycle phases reject missing required checks and inapplicable-only evidence", async () => {
+    for (const label of [
+        "Commit:spec", "Plan", "Commit:plan", "Build:first",
+        "Verify", "Review:code", "Review:security", "Review:tests", "Ship",
+    ]) {
+        for (const checks of [
+            [check, { ...check, outcome: "not-run" }],
+            [check, { ...check, outcome: "failed" }],
+            [{ ...check, outcome: "not-applicable" }],
+            [check, { ...check, outcome: "not-applicable", evidence: "" }],
+        ]) {
+            await inRepository(async () => {
+                const h = generatedSpecHarness();
+                const agent = h.ctx.agent;
+                h.ctx.agent = async (prompt, options) => {
+                    const result = await agent(prompt, options);
+                    return options.label === label ? { ...result, checks } : result;
+                };
+                let result;
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    try {
+                        result = await lifecycle.run(h.ctx);
+                        break;
+                    } catch (error) {
+                        if (!/^PAUSED:approve-(spec|plan)$/.test(error.message)) throw error;
+                    }
+                }
+                assert.equal(result?.verdict, "NO-GO", `${label}: ${JSON.stringify(checks)}`);
+                assert.equal(result.phase, label.startsWith("Review:") ? "Review" : label);
+            });
+        }
+    }
+});
+
 test("workflow uses the same public name as its trigger skill and command", () => {
     assert.equal(lifecycle.meta.name, "addy-lifecycle");
     assert.match(lifecycle.meta.description, /Standalone Define -> Plan -> Build -> Verify -> Review -> Ship/);

@@ -4,7 +4,7 @@ const checkSchema = {
     type: "object",
     properties: {
         command: text,
-        outcome: { type: "string", enum: ["passed", "failed", "not-run"] },
+        outcome: { type: "string", enum: ["passed", "failed", "not-run", "not-applicable"] },
         evidence: text,
     },
     required: ["command", "outcome", "evidence"],
@@ -46,10 +46,11 @@ const nonempty = (value) => typeof value === "string" && value.trim().length > 0
 const evidenced = (report, { allowNotRun = false } = {}) => report?.status === "ready" && nonempty(report.summary) &&
     Array.isArray(report.evidence) && report.evidence.length > 0 && report.evidence.every(nonempty) &&
     Array.isArray(report.checks) && report.checks.every((check) =>
-        (check.outcome === "passed" || (allowNotRun && check.outcome === "not-run")) &&
+        (check.outcome === "passed" || check.outcome === "not-applicable" ||
+            (allowNotRun && check.outcome === "not-run")) &&
         nonempty(check.command) && nonempty(check.evidence)) &&
     Array.isArray(report.questions) && report.questions.length === 0;
-const verified = (report) => evidenced(report) && report.checks.length > 0;
+const verified = (report) => evidenced(report) && report.checks.some((check) => check.outcome === "passed");
 const committed = (report) => verified(report) && typeof report.commit === "string" &&
     /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(report.commit);
 const specified = (report) => evidenced(report, { allowNotRun: true });
@@ -280,7 +281,10 @@ and decisions. Verify, Review and Ship are read-only.
 If disk content contradicts the supplied approved spec or plan, stop and report the discrepancy.
 Evidence must cite actual artifact paths, file:line references or observed command output.
 Do not invent measurements, approvals, successful checks or completion. A failed or unavailable
-required check means blocked; an inapplicable check must be explained, not reported as passed.
+required check means blocked. Use outcome not-applicable only for checks outside this phase's
+required verification, and explain why in evidence. Use not-run for an applicable check that
+was not executed; it means blocked, not ready. Never mark a required acceptance, verification,
+or commit check as not-applicable just because it could not be run.
 Return the requested structured report, including reasons and recovery steps when blocked.
 `;
 
@@ -308,6 +312,8 @@ output in checks. Verify the commit exists, is reachable from HEAD and contains 
 intended change and no unrelated edits; report failure as blocked.
 If an interrupted or prior run already committed this exact approved content, inspect
 and report that existing reachable commit instead of making an empty/duplicate commit.
+For artifact-only Commit:spec and Commit:plan, implementation tests are not-applicable,
+not not-run. Git verification is still required and must have passed evidence.
 `;
 
 async function loadSpec(specPath) {
@@ -619,7 +625,7 @@ export const lifecycle = {
                     },
                 },
             }));
-        const tasks = evidenced(plan) ? orderTasks(plan.tasks, plan.completed) : null;
+        const tasks = verified(plan) ? orderTasks(plan.tasks, plan.completed) : null;
         if (!tasks) return stop("Plan", "Plan blocked, task graph invalid or empty without verified completed work.");
         const readPlan = async () => {
             if (!Array.isArray(plan.artifactPaths) || !plan.artifactPaths.length ||
@@ -740,7 +746,7 @@ export const lifecycle = {
             persona,
         )));
         if (reviews.length !== roles.length || reviews.some((review) =>
-            !evidenced(review) || review.verdict !== "GO" || !Array.isArray(review.findings) ||
+            !verified(review) || review.verdict !== "GO" || !Array.isArray(review.findings) ||
             review.findings.some((finding) => blocking.has(finding.severity)))) {
             return stop("Review", "Specialist report missing, blocked, or contains launch blockers.");
         }
@@ -761,7 +767,7 @@ export const lifecycle = {
             "GO means assessed readiness, never permission to deploy.",
             { spec, plan, completed, verification, reviews },
             schema({ verdict: verdictSchema, rollback: text }));
-        if (!evidenced(ship) || ship.verdict !== "GO" || !nonempty(ship.rollback)) {
+        if (!verified(ship) || ship.verdict !== "GO" || !nonempty(ship.rollback)) {
             return stop("Ship", "Launch assessment blocked, missing evidence, or lacks a rollback plan.");
         }
         ctx.log("GO: approved spec, plan and tasks committed. Launch readiness only; no push, merge or deployment authorized.");
