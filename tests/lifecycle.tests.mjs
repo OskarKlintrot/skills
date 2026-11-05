@@ -160,6 +160,52 @@ test("returning to earlier plan feedback regenerates artifacts and pauses for fr
     });
 });
 
+test("plan-only recovery retains approved Define feedback throughout replay", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        await approvePlan(h);
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        await mkdir("tasks");
+        const define = "Include repository-owned Terraform/Bicep prerequisites";
+        await writeFile(context.revisionRequestPath, JSON.stringify({ define, plan: "Initial revised plan" }));
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-spec:/);
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        const definesBefore = h.calls.filter((call) => call.label === "Define").length;
+        const plan = "Resolve remaining plan evidence";
+        await writeFile(context.revisionRequestPath, JSON.stringify({ plan }));
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        assert.equal(h.calls.filter((call) => call.label === "Define").length, definesBefore);
+        const revisedPlan = h.calls.filter((call) => call.label === "Plan").at(-1);
+        const revisedContext = JSON.parse(revisedPlan.prompt.split("Context (JSON):\n")[1]);
+        assert.deepEqual(revisedContext.revisions, { define, plan });
+        assert.deepEqual(revisedContext.revisionGeneration, { spec: 1, plan: 2 });
+        assert.equal((await lifecycle.run(h.ctx)).verdict, "GO");
+        const build = h.calls.find((call) => call.label === "Build:first");
+        assert.deepEqual(JSON.parse(build.prompt.split("Context (JSON):\n")[1]).revisions, { define, plan });
+    });
+});
+
+test("Define-only recovery retains Plan feedback and requires both approvals", async () => {
+    await inRepository(async () => {
+        const h = generatedSpecHarness();
+        await approvePlan(h);
+        const context = JSON.parse(h.calls[0].prompt.split("Context (JSON):\n")[1]);
+        await mkdir("tasks");
+        const plan = "Preserve the least-privilege rights matrix";
+        await writeFile(context.revisionRequestPath, JSON.stringify({ plan }));
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        const define = "Clarify the approved prerequisites";
+        await writeFile(context.revisionRequestPath, JSON.stringify({ define }));
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-spec:/);
+        await assert.rejects(() => lifecycle.run(h.ctx), /PAUSED:approve-plan:/);
+        const revisedPlan = h.calls.filter((call) => call.label === "Plan").at(-1);
+        const revisedContext = JSON.parse(revisedPlan.prompt.split("Context (JSON):\n")[1]);
+        assert.deepEqual(revisedContext.revisions, { define, plan });
+        assert.deepEqual(revisedContext.revisionGeneration, { spec: 1, plan: 2 });
+        assert.equal(h.calls.some((call) => call.label.startsWith("Build:")), false);
+    });
+});
+
 test("Define rejects a new commit on both initialized and unborn branches", async () => {
     for (const initialized of [true, false]) {
         await inRepository(async (_, git) => {

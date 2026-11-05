@@ -198,8 +198,8 @@ async function revisionGeneration(ctx, revisions) {
         let appended = false;
         const next = await ctx.step(`revision-history-v1:${attempt}`, () => {
             appended = true;
-            const define = revisions.define ?? "";
-            const plan = revisions.plan ?? "";
+            const define = revisions.define ?? previous.define;
+            const plan = revisions.plan ?? previous.plan;
             return {
                 define, plan,
                 specGeneration: previous.specGeneration + Number(define !== previous.define),
@@ -372,8 +372,12 @@ export const lifecycle = {
         const revisionPath = ctx.args.revisionPath ??
             `tasks/lifecycle-revisions-${fingerprint(ctx.runId).slice(0, 12)}.json`;
         if (!nonempty(revisionPath)) throw new Error("revisionPath must be a non-empty path.");
-        const revisions = await loadRevisions(revisionPath);
-        const generations = await revisionGeneration(ctx, revisions);
+        const request = await loadRevisions(revisionPath);
+        const generations = await revisionGeneration(ctx, request);
+        const revisions = {
+            ...(generations.define ? { define: generations.define } : {}),
+            ...(generations.plan ? { plan: generations.plan } : {}),
+        };
         const specRevision = generations.specGeneration ? String(generations.specGeneration) : "";
         const planRevision = generations.planGeneration ? String(generations.planGeneration) : "";
         const agent = async (label, instruction, context, outputSchema = schema(), persona) => {
@@ -397,7 +401,8 @@ export const lifecycle = {
             ctx.log(`APPROVAL REQUIRED: ${key}\n${JSON.stringify(report)}\n` +
                 `Review the artifacts before resuming run ${ctx.runId}. Resume explicitly approves ` +
                 "this exact output; do not resume automatically. To request revisions, update the " +
-                `revision request file ${revisionPath} with define and/or plan feedback, then resume this same run.`);
+                `revision request file ${revisionPath} with define and/or plan feedback, then resume this same run. ` +
+                "Omitted fields retain their previously supplied feedback.");
             await ctx.pause(key);
         };
 

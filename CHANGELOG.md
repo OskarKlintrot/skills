@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.1] - 2026-11-05
+
+### Fixed
+
+- Lifecycle revision requests retain previously supplied feedback for omitted
+  fields. Plan-only recovery no longer restarts Define, and later phases receive
+  the retained specification and planning decisions.
+
 ## [0.10.0] - 2026-11-05
 
 ### Added
