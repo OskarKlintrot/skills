@@ -18,7 +18,7 @@ $skills = [ordered]@{
 }
 $failures = 0
 $descriptions = @{}
-$packagedSkills = @('addy-lifecycle', 'exhaustive-task', 'git-conventions', 'readme-conventions')
+$packagedSkills = @('addy-lifecycle', 'csharp-15', 'exhaustive-task', 'git-conventions', 'readme-conventions')
 $packagedAgents = @('code-reviewer', 'security-auditor', 'test-engineer', 'web-performance-auditor')
 
 function Assert-Check([string]$Name, [bool]$Condition) {
@@ -159,6 +159,13 @@ Assert-Check 'Exhaustive task skill selects coverage and batch defaults before w
     $exhaustive.Contains('explicit launch') -and
     $exhaustive.Contains('Never auto-resume.')
 )
+$csharp = Get-Content -LiteralPath (Join-Path $root 'skills' 'csharp-15' 'SKILL.md') -Raw
+Assert-Check 'C# 15 skill has discoverable metadata and covers its feature guidance' (
+    $csharp -match '\A---\r?\nname: csharp-15\r?\ndescription: [^\r\n]+' -and
+    $csharp.Contains('# C# 15') -and
+    $csharp.Contains('## 7. Memory safety model (preview)') -and
+    $csharp.Contains('Only use this when the user opts in.')
+)
 Assert-Check 'Exhaustive task coordinator protects user work and routes human decisions' (
     $exhaustive.Contains('agent-skills:git-workflow-and-versioning') -and
     $exhaustive.Contains('git status --porcelain') -and
@@ -194,6 +201,9 @@ try {
     )
     Assert-Check 'Installed plugin discovers the exhaustive-task skill' (
         $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('exhaustive-task')
+    )
+    Assert-Check 'Installed plugin discovers the csharp-15 skill' (
+        $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('csharp-15')
     )
     $workflowOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run addy-lifecycle --args '{"notGoal":"invalid"}' 2>&1
     Assert-Check 'Installed lifecycle workflow loads and enforces its argument schema' (
