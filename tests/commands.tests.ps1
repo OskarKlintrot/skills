@@ -124,18 +124,22 @@ Assert-Check 'Workflow owns all six phases, approval gates, baseline capture and
     $workflow.Contains('Define -> Plan -> Build -> Verify -> Review -> Ship') -and
     $workflow.Contains('approve-spec') -and $workflow.Contains('approve-plan') -and
     $workflow.Contains('captureBaseline') -and $workflow.Contains('git diff --cached') -and
-    $workflow.Contains('agent-skills:spec-driven-development') -and
-    $workflow.Contains('agent-skills:planning-and-task-breakdown') -and
-    $workflow.Contains('agent-skills:incremental-implementation') -and
-    $workflow.Contains('agent-skills:test-driven-development') -and
-    $workflow.Contains('agent-skills:shipping-and-launch') -and
-    $workflow.Contains('agent-skills:git-workflow-and-versioning') -and
     $workflow.Contains('do not prohibit creating an appropriate feature branch') -and
     $workflow -notmatch 'Do not create branches' -and
     $workflow.Contains('oskar-tools:code-reviewer') -and
     $workflow.Contains('oskar-tools:security-auditor') -and
     $workflow.Contains('oskar-tools:test-engineer')
 )
+foreach ($name in @(
+    'spec-driven-development', 'planning-and-task-breakdown',
+    'incremental-implementation', 'test-driven-development',
+    'shipping-and-launch', 'git-workflow-and-versioning'
+)) {
+    Assert-Check "Lifecycle uses the registered $name skill name" (
+        $workflow -match "(?<![\w:-])$([regex]::Escape($name))(?![\w-])" -and
+        -not $workflow.Contains("agent-skills:$name")
+    )
+}
 
 $exhaustive = Get-Content -LiteralPath (Join-Path $root 'skills' 'exhaustive-task' 'SKILL.md') -Raw
 Assert-Check 'Exhaustive task skill selects coverage and batch defaults before workflow launch approval' (

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.3] - 2026-11-06
+
+### Fixed
+
+- Lifecycle packaging checks use registered skill-tool names instead of
+  namespaced command names. Each required skill now has its own check so
+  failures identify the missing or incorrectly prefixed name.
+
 ## [0.10.2] - 2026-11-05
 
 ### Fixed
