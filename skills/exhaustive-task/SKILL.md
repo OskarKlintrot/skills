@@ -49,8 +49,7 @@ step: changes stay uncommitted unless the goal asks workers to commit them.
    A single scoped file still receives a full unit pass in `files` mode, followed
    by varied review rounds and final verification; one file never means one round.
 3. Propose an absolute `ledgerPath` and ask the user to confirm or change it:
-   in the repository when the ledger is a deliverable (every productive round
-   then changes the files, which costs a Verify agent per productive round),
+   in the repository when the ledger is a deliverable,
    otherwise in the session's `files/` folder. An existing ledger for the same
    goal, mode and coverage continues where it stopped; use a new path for a fresh
    start or different coverage. Legacy ledgers use `findings` coverage.
