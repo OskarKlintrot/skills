@@ -50,25 +50,14 @@ const judgeInstruction =
     "Return only the decision and supporting rationale, not raw ledger entries, IDs, or history. " +
     "Do not use Markdown fences, write files, or implement changes.";
 
-const synchronizeInstruction =
-    "Combine the plans into one complete Markdown draft using the original question, all three " +
-    "complete plans, reviews, and judgment. Use judgment.winner as the base and apply the additions " +
-    "selected in judgment.takeFromOthers from the referenced plan sections. Follow Judge's decision; " +
-    "do not choose the winner again. Reconcile overlapping selected additions and explicitly report " +
-    "any contradiction you cannot reconcile without changing that decision. " +
-    "Explicitly report any remaining review findings by branch, including those from branches " +
-    "that reached iteration_limit. Do not describe a plan with unresolved findings as approved. " +
-    "Return only the complete Markdown draft, not a summary or file path. " +
-    "Do not write files or implement changes.";
-
 const synthesizeInstruction = planChangeInstruction +
     "Compose the complete final Markdown plan from the original question, all three complete " +
-    "plans, reviews, judgment, and the synchronized draft. Keep the content of the synchronized " +
-    "draft, which already applies Judge's decision; do not choose the winner again or add changes " +
-    "Judge did not select. Use the other inputs only to resolve gaps or ambiguities in the draft. " +
-    "Keep any contradictions the draft reports and explicitly report any remaining review findings " +
-    "by branch, including those from branches that reached iteration_limit. Do not describe a plan " +
-    "with unresolved findings as approved. " +
+    "plans, reviews, and judgment. Use judgment.winner as the base and apply the additions selected " +
+    "in judgment.takeFromOthers from the referenced plan sections. Follow Judge's decision; do not " +
+    "choose the winner again. Reconcile overlapping selected additions and explicitly report any " +
+    "contradiction you cannot reconcile without changing that decision. " +
+    "Explicitly report any remaining review findings by branch, including those from branches " +
+    "that reached iteration_limit. Do not describe a plan with unresolved findings as approved. " +
     "Keep the skill's template headings and markers; write the prose in the original question's language. " +
     "Return exactly one JSON object with string fields status, plan, and reason, without Markdown " +
     "fences or surrounding prose. On success, return status ready, the complete final Markdown plan " +
@@ -79,8 +68,8 @@ const synthesizeInstruction = planChangeInstruction +
 export const battlePlan = {
     meta: {
         name: "battle-plan",
-        description: "Three parallel plan/review loops, then judge, synchronize, and synthesize the plans.",
-        phases: [{ title: "Plan / Review" }, { title: "Judge" }, { title: "Synchronize" }, { title: "Synthesize" }],
+        description: "Three parallel plan/review loops, then judge and synthesize the plans.",
+        phases: [{ title: "Plan / Review" }, { title: "Judge" }, { title: "Synthesize" }],
         limits: { maxAiCredits: 160 },
         argsSchema: {
             type: "object",
@@ -244,15 +233,11 @@ export const battlePlan = {
             })),
         };
 
-        ctx.phase("Synchronize");
+        ctx.phase("Synthesize");
         const plans = results.map(({ branch, plan, review, stopReason }) => ({
             branch, plan, review, stopReason,
         }));
-        const synchronized = await agent(`Synchronize\n${synchronizeInstruction}`, { question, results: plans, judgment }, { label: "Synchronize", model: models.plan[0] });
-        if (!isName(synchronized)) throw new Error("Synchronize returned an empty or invalid plan.");
-
-        ctx.phase("Synthesize");
-        const synthesisResponse = await agent(`Synthesize\n${synthesizeInstruction}`, { question, results: plans, judgment, synchronized }, { label: "Synthesize", model: models.plan[0] });
+        const synthesisResponse = await agent(`Synthesize\n${synthesizeInstruction}`, { question, results: plans, judgment }, { label: "Synthesize", model: models.plan[0] });
         const synthesis = parseObject(synthesisResponse, "Synthesize", "plan-change result");
         if (typeof synthesis.status !== "string" || typeof synthesis.plan !== "string"
             || typeof synthesis.reason !== "string") {
