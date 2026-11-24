@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Battle plan compares investigation findings when choosing a base plan and
+  combines selected additions from the other plans.
+
 ## [0.10.3] - 2026-11-06
 
 ### Fixed

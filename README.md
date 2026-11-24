@@ -2,53 +2,33 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, [engineering workflow commands](#engineering-workflow-commands) that mostly use the separately installed Addy agent-skills plugin, four [specialist personas](#agents), and [dynamic workflows](#dynamic-workflows) for a standalone Addy lifecycle, batched exhaustive tasks, parallel plan/review loops and a no-agent `hello-world` example. These components are available through plugin installation without development mappings. It contains no standalone instructions or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+The plugin provides [skills](#git-conventions), [engineering commands](#engineering-workflow-commands), [specialist agents](#agents), and [dynamic workflows](#dynamic-workflows).
 
 ## Git conventions
 
-The rules live in `skills\git-conventions\SKILL.md`. The skill is available globally through user-level plugin installation or the [global skills mapping](#global-development-mappings-on-windows). Its name and description let agents discover it before creating branches, writing commits or PRs, or merging PRs. Full instructions load when the skill is activated, not at session or subagent startup. You can also invoke `git-conventions` explicitly.
+The `git-conventions` skill and hook apply these conventions to agent Git operations:
 
-- **Commit messages and PR titles:** `<type>(<optional scope>): <Capitalized description>`, where type is one of `feat`, `fix`, `perf`, `docs`, `style`, `refactor`, `test`, or `build`. The first line is at most 72 characters.
+- **Commit messages and PR titles:** `<type>(<optional scope>): <Capitalized imperative>`, where type is one of `feat`, `fix`, `perf`, `docs`, `style`, `refactor`, `test`, or `build`. The first line is at most 72 characters.
 - **Language and tone:** English, plain and concise (based on [`bro`](https://github.com/cursor/plugins/tree/main/pstack/skills/bro)). Messages containing `åäöæø` are rejected as a heuristic for non-English text.
 - **Branches:** `feature/<kebab-case>` or `release/<name>`.
 
-Skill activation depends on the agent or an explicit request. Independently, a `preToolUse` hook denies tool calls that break the checkable rules. It checks:
-
-- `git commit` (`-m`, `--message`, `-F`, heredocs, and PowerShell here-strings), and branch creation via `git checkout`, `git switch`, `git branch`, and `git worktree add`, in bash and PowerShell tool calls.
-- `gh pr create`, `gh pr edit`, and `gh pr merge` (GitHub and GHE), and `az repos pr create` and `az repos pr update` (Azure DevOps).
-- GitHub and Azure DevOps MCP tools that create or update pull requests or create branches.
-
-The hook loads through plugin installation or the global `hooks` mapping. Its commands resolve the validator from `${PLUGIN_ROOT}` when loaded as a plugin, and from the user-level hooks directory otherwise. Validation does not depend on skill activation.
-
-The hook only affects agent tool calls, not commands you run yourself. Messages that cannot be resolved statically, such as `$variable` values, are allowed. `fixup!`, `squash!`, and `amend!` commits are skipped. The script requires PowerShell 7 (`pwsh`) on `PATH`. If the validator fails internally, it allows the call.
-
-Run the tests with:
-
-```powershell
-pwsh -NoProfile -File tests\git-conventions-hooks.tests.ps1
-```
+The hook checks supported agent calls involving commits, branches, and GitHub or Azure DevOps pull requests, including PR edits and merges. It does not check commands you run yourself or messages it cannot resolve, such as variable values. `fixup!`, `squash!`, and `amend!` commits are excluded. The hook requires PowerShell 7 (`pwsh`) on `PATH`; if validation fails internally, the call is allowed.
 
 ## README conventions
 
-`skills\readme-conventions\SKILL.md` applies when creating or editing a file named `README.md` in any directory, and follows each README's existing language and concise style. It treats README files as maintained references: descriptions must match current code and configuration, claims need evidence, and operational procedures must remain useful beyond a particular change. Session summaries, task status and one-time rollout or migration instructions belong elsewhere; change-specific rollout details and cross-PR dependencies belong in PR descriptions.
-
-The skill's name and description let agents discover it for README work, including documentation updates prompted by code or configuration changes. Its full instructions load when the skill is activated, rather than through session or subagent startup hooks. You can also invoke `readme-conventions` explicitly. Activation depends on the agent or an explicit request; it is not enforced by a file-matching loader, and no hook blocks README edits based on their content.
-
-Plugin installation needs no global directory mappings. For local development, the [global skills mapping](#global-development-mappings-on-windows) exposes the same skill without copying it; the `hooks` and `instructions` mappings are not needed for README conventions.
+The `readme-conventions` skill treats README files as maintained references. It follows the existing language and style, checks claims against the project, and keeps session status and one-time rollout details elsewhere.
 
 ## C# 15
 
-`skills\csharp-15\SKILL.md` provides guidance for C# 15 and .NET 11, including collection expression arguments, union types, closed class hierarchies, extension indexers, labeled jumps, and static interface members. It also covers the preview memory-safety model, which the skill says to use only when the user opts in. The skill is discoverable for C# 15 features, targets, and related compiler diagnostics; its full instructions load when activated.
+The `csharp-15` skill provides guidance on C# 15 and .NET 11 features. Its preview memory-safety guidance is used only when requested.
 
 ## Plan change
 
-`skills\plan-change\SKILL.md` guides concise plans for proposed changes, including verified assumptions, visual summaries, evidence, test cases, out-of-scope items and merge risks. Invoke it with `/oskar-tools:plan-change`. In Plan mode it uses the native plan presentation; it does not switch session modes itself. In workflows or subagents it returns the complete plan for the caller to pass to the next step, using the caller's schema when required. In other interactive sessions it saves a Markdown artifact in the session's `files/` folder and links to it. You can explicitly request a file, a file path, or text output. Unlike the `plan` command, it does not prescribe a task breakdown.
+Use `/oskar-tools:plan-change` to make a concise plan with evidence, test cases, out-of-scope items, and merge risks. It uses the native plan presentation in Plan mode, returns the full plan to a workflow or subagent caller, and otherwise saves it in the session's files. You can request a file or text output. Creating a plan does not approve its implementation.
 
 ## Engineering workflow commands
 
-`com.github.copilot\commands\*.md` contains nine Copilot CLI command adapters based on the `.claude\commands` files shipped with [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), version `0.6.14`, plus a standalone `addy-lifecycle` dynamic workflow with a skill and command as launch adapters. `com.github.copilot\commands\LICENSE` retains the unchanged upstream MIT license and copyright notice, with a separate attribution clarification. That notice identifies the upstream material; the Copilot adaptations and additional workflow changes belong to this repository's history and are not attributed to or endorsed by Addy Osmani.
-
-The engineering commands and the `addy-lifecycle` workflow use skills from the separately installed, enabled `agent-skills` plugin; they do not bundle or install those skills. Install it to use these workflows:
+The engineering commands and `addy-lifecycle` use the separately installed [agent-skills](https://github.com/addyosmani/agent-skills) plugin:
 
 ```powershell
 copilot plugin marketplace add addyosmani/agent-skills
@@ -60,37 +40,26 @@ Copilot registers plugin commands with the plugin name as a prefix. Use the full
 
 | Command | Workflow |
 | --- | --- |
-| `/oskar-tools:spec <feature>` | Clarify requirements and write a spec using `spec-driven-development`. |
+| `/oskar-tools:spec <feature>` | Clarify requirements and write a spec. |
 | `/oskar-tools:addy-lifecycle <feature or spec>` | Start the standalone workflow, which owns requirements, spec, plan, implementation, verification, review and launch-readiness gates. |
-| `/oskar-tools:plan <scope>` | Break the spec into tasks using `planning-and-task-breakdown`; no implementation. |
-| `/oskar-tools:build [auto\|all]` | Implement the next task, or the approved whole plan, using `incremental-implementation` and `test-driven-development`. |
-| `/oskar-tools:test <feature or bug>` | Run TDD or the Prove-It bug-fix workflow using `test-driven-development`. |
-| `/oskar-tools:review <scope>` | Review changes across five axes using `code-review-and-quality`; no edits or GitHub posting. |
-| `/oskar-tools:code-simplify <scope>` | Simplify changed code without changing behavior using `code-simplification`. |
-| `/oskar-tools:constraints [check\|guard\|ratchet]` | Set up or operate the quality bar using `constraint-driven-development`. |
-| `/oskar-tools:webperf <URL, report, or scope>` | Audit browser-facing performance using `performance-optimization`; distinguish measured Deep mode from unmeasured Quick mode. |
-| `/oskar-tools:ship <scope>` | Assess launch readiness using `shipping-and-launch`; produce specialist findings, a GO/NO-GO decision, and a rollback plan, not a deployment. |
+| `/oskar-tools:plan <scope>` | Break a spec into tasks without implementing it. |
+| `/oskar-tools:build [auto\|all]` | Implement the next task or the approved whole plan. |
+| `/oskar-tools:test <feature or bug>` | Run TDD or the Prove-It bug-fix workflow. |
+| `/oskar-tools:review <scope>` | Review changes without editing or posting to GitHub. |
+| `/oskar-tools:code-simplify <scope>` | Simplify changed code without changing behavior. |
+| `/oskar-tools:constraints [check\|guard\|ratchet]` | Set up or operate the quality bar. |
+| `/oskar-tools:webperf <URL, report, or scope>` | Audit browser-facing performance. |
+| `/oskar-tools:ship <scope>` | Assess launch readiness and provide a rollback plan; does not deploy. |
 
 Arguments follow the command in chat. `/oskar-tools:build` includes a commit after each verified task; `build auto` also commits newly generated planning documents separately after plan approval. `/oskar-tools:spec` follows the upstream skill's instruction to commit the spec. `/oskar-tools:addy-lifecycle` commits the approved spec, approved plan/task artifacts, and each verified task separately. These workflows do not switch Copilot's runtime mode or bypass tool permissions and repository instructions. Commits do not authorize pushing, merging, or deploying.
 
-The adapters use Copilot instruction sources, installed skill names, and available question/delegation tools rather than Claude-specific frontmatter, instruction paths, or agent APIs. The lifecycle workflow owns its phase gates and orchestration, composes the applicable skills from the separately installed `agent-skills` plugin, and uses this plugin's code, security and test personas for its independent Review assignments. `ship` also uses those three personas; `webperf` prefers this plugin's performance persona. Addy's separately installed plugin supplies skills for the commands and lifecycle workflow; this plugin supplies the Copilot persona definitions. Live browser checks require suitable configured tools, such as Chrome DevTools MCP, and unavailable measurement evidence is reported rather than invented.
+Live browser measurements require suitable configured tools, such as Chrome DevTools MCP. Unavailable measurements are reported as such.
 
-Commands load through plugin installation or a session-scoped `--plugin-dir` mount; the global development mappings below do not expose them. Choose plugin loading instead of mappings for the complete component set, avoiding duplicate hook sources. Command loading and argument forwarding are verified in Copilot CLI; other Copilot clients can have different component support.
-
-Run the command checks with:
-
-```powershell
-pwsh -NoProfile -File tests\commands.tests.ps1
-pwsh -NoProfile -File tests\commands.tests.ps1 -Runtime
-```
-
-The first command checks command/persona packaging, descriptions, skill dependencies, and incompatible runtime assumptions. `-Runtime` also requires an installed Copilot CLI: it installs this plugin into a temporary isolated `COPILOT_HOME` and checks actual namespaced command and persona registration through ACP, without executing a model prompt. It restores the environment and removes the temporary installation.
-
-The `Tests` GitHub Actions workflow runs both test scripts on Windows for pull requests, pushes to `master`, and manual runs. It installs a pinned Copilot CLI and uses a local-provider configuration for discovery-only runtime checks, without Copilot credentials or model requests.
+Some commands and agents are adapted from [Addy's agent-skills](https://github.com/addyosmani/agent-skills). Their MIT license notices are in `com.github.copilot\commands\LICENSE` and `com.github.copilot\agents\LICENSE`.
 
 ## Install
 
-Use a current GitHub Copilot CLI with Agent Plugins 1.0 support. Once these files are merged into the repository's default branch:
+Use a GitHub Copilot CLI with Agent Plugins 1.0 support:
 
 ```powershell
 copilot plugin marketplace add OskarKlintrot/skills
@@ -109,11 +78,7 @@ You can opt in during installation or later. In your user-level `%USERPROFILE%\.
 "autoUpdate": true
 ```
 
-This is a property to add to the existing marketplace entry, not a complete settings file. Preserve its source information and all other settings. If `COPILOT_HOME` is set, use `settings.json` in that directory instead.
-
-Copilot CLI 1.0.101-0 has no automatic-update flag for `plugin install` or `plugin marketplace add`. The plugin cannot enable this user setting itself. See the [configuration reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference#configuration-file-settings) for `extraKnownMarketplaces`.
-
-The opt-in updates the marketplace's installed plugins at session start in interactive CLI and `-p` sessions, subject to CLI update settings, policies, and trust requirements. It does not apply to SDK or server sessions. Automatic updates in the Copilot desktop app are not guaranteed. Repository-level settings cannot enable this marketplace's automatic updates.
+Add this property to the existing marketplace entry without replacing its source information or other settings. If `COPILOT_HOME` is set, use its `settings.json` instead. Automatic updates depend on the client and its settings, policies, and trust requirements; see the [configuration reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference#configuration-file-settings).
 
 ## Update
 
@@ -126,9 +91,7 @@ copilot plugin update oskar-tools
 
 The first command refreshes the marketplace catalog; the second updates the installed plugin. Start a new session to use updated content.
 
-When publishing content changes, increment `version` in `plugin.json` and merge the changes into the branch used by the marketplace. The marketplace entry deliberately omits a duplicate plugin version.
-
-We follow [Semantic Versioning](https://semver.org/): after `1.0.0`, increment the major version for breaking changes, the minor version for backward-compatible additions, and the patch version for backward-compatible bug fixes. During `0.x` development, compatibility is not guaranteed; use minor versions for additions or breaking changes and patch versions for backward-compatible fixes.
+When publishing content changes, increment `version` in `plugin.json`. During `0.x` development, use a minor version for additions or breaking changes and a patch version for compatible fixes. After `1.0.0`, follow [Semantic Versioning](https://semver.org/).
 
 ## Develop locally
 
@@ -149,13 +112,11 @@ For a direct local installation instead, use the absolute path:
 copilot plugin install (Get-Location).Path
 ```
 
-Direct local installations are cached. Run that install command again after changes, then start a new session. CLI 1.0.101-0 rejects a bare `.` for direct installation and warns that direct installs are deprecated; prefer the marketplace workflow.
+Direct local installations are cached. Run that install command again after changes, then start a new session.
 
 ### Global development mappings on Windows
 
-As an alternative to loading the plugin, directory junctions can expose the working clone as personal CLI customizations. They are explicit local setup, not something plugin installation creates. Use a stable clone, not a temporary session worktree or an installed-plugin cache.
-
-For a clone at `C:\repos\external\OskarKlintrot\skills`, use these mappings:
+As an alternative to loading the plugin, directory junctions can expose a stable clone as personal CLI customizations. Plugin installation does not create these mappings:
 
 | Global directory under `%USERPROFILE%\.copilot` | Source relative to the clone |
 | --- | --- |
@@ -164,17 +125,17 @@ For a clone at `C:\repos\external\OskarKlintrot\skills`, use these mappings:
 | `hooks` | `com.github.copilot\hooks` |
 | `instructions` | `instructions` |
 
-If `COPILOT_HOME` is set, its directory replaces `%USERPROFILE%\.copilot`. The root `instructions` directory is for this local mapping only; it is not a portable plugin component.
+If `COPILOT_HOME` is set, its directory replaces `%USERPROFILE%\.copilot`. These mappings do not expose plugin commands or dynamic workflows.
 
 Use this fail-fast, idempotent setup procedure:
 
-1. Pull the merged changes, or integrate the reviewed local commit, into the stable clone first. Confirm all four source directories exist. Stop on a missing source; do not create an empty substitute or map a cache directory.
+1. Confirm all four source directories exist in the stable clone. Stop on a missing source; do not create an empty substitute or map a cache directory.
 2. Inspect every destination before changing anything. An existing junction to the exact intended source is already correct: leave it unchanged. Compare resolved absolute targets, ignoring Windows path casing and trailing separators.
 3. Stop on any conflicting destination: a regular file or directory, a symbolic link, or a junction to a different or missing target. Preserve it and resolve the conflict explicitly. Never delete, overwrite, or move existing customizations automatically.
 4. After all preflight checks pass, create junctions only for missing destinations, using PowerShell `New-Item -ItemType Junction` with explicit absolute paths. Check each result and surface any error; rerunning the procedure must preserve all correct existing mappings.
 5. Leave the existing global `copilot-instructions.md` file untouched. It is a separate instruction source, not the destination of the `instructions` mapping. Preserve unrelated settings and customizations.
 
-Edits through a junction change files in the clone. Add actual content there deliberately; empty mapped directories still provide no capabilities. Global hook mappings also execute future hook definitions locally, so review any hook change before starting a new session.
+Edits through a junction change files in the clone. Global hook mappings also execute hook definitions locally, so review hook changes before starting a new session.
 
 ### Reload and duplicate sources
 
@@ -195,142 +156,80 @@ copilot instruction list --json
 
 Check the paths and `applyTo` values, not just the presence of a filename. This lists what that CLI process discovers; it is not proof of what an already-running desktop or SDK session has loaded. An existing session can retain its previous state.
 
-## Add content
+## Agents
 
-The plugin lives at the repository root. The marketplace's `source` points to that root.
-
-```text
-plugin.json
-.github\plugin\marketplace.json
-skills\
-instructions\
-com.github.copilot\
-  agents\
-  commands\
-  extensions\
-    hello-world\
-      extension.mjs
-    addy-lifecycle\
-      extension.mjs
-      workflow.mjs
-    exhaustive-task\
-      extension.mjs
-      workflow.mjs
-    battle-plan\
-      extension.mjs
-      workflow.mjs
-  hooks\
-    hooks.json
-    scripts\
-tests\
-```
-
-Empty component directories are tracked with `.gitkeep` files. Keep repository content and instructions in English.
-
-### Skills
-
-Create `skills\<skill-name>\SKILL.md`. Each skill must be an immediate subdirectory of `skills` and include YAML frontmatter with `name` and `description`, followed by its instructions.
-
-See [adding agent skills](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills). Add only skills you actually intend to use; this repository does not ship example skills.
-
-### Agents
-
-The four personas in `com.github.copilot\agents` are adapted from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), version `0.6.15`. Their MIT license is retained in `com.github.copilot\agents\LICENSE`; Copilot integration changes belong to this repository, not Addy Osmani. Original content is preserved in the initial import commit before local adaptations.
+The plugin provides four specialist agents:
 
 | Copilot agent ID | Role | Used by |
 | --- | --- | --- |
-| `oskar-tools:code-reviewer` | Five-axis code review | `/oskar-tools:ship` |
-| `oskar-tools:security-auditor` | Security and trust-boundary review | `/oskar-tools:ship` |
-| `oskar-tools:test-engineer` | Test strategy and coverage analysis | `/oskar-tools:ship` |
-| `oskar-tools:web-performance-auditor` | Sourced web-performance assessment | `/oskar-tools:webperf`, not the lifecycle's global review fan-out |
+| `oskar-tools:code-reviewer` | Five-axis code review | `/oskar-tools:ship`, lifecycle Review |
+| `oskar-tools:security-auditor` | Security and trust-boundary review | `/oskar-tools:ship`, lifecycle Review |
+| `oskar-tools:test-engineer` | Test strategy and coverage analysis | `/oskar-tools:ship`, lifecycle Review |
+| `oskar-tools:web-performance-auditor` | Sourced web-performance assessment | `/oskar-tools:webperf` |
 
-Personas define specialist perspectives for commands that select them; separately installed `agent-skills:*` skills define those commands' methods. Caller scope, read-only assignments and structured workflow schemas take precedence over a persona's default Markdown template. Missing required skills are blockers for those commands and the lifecycle. The lifecycle uses the code, security and test personas during Review. No persona fixes a model, reasoning effort or context tier.
+These agents use skills from the separately installed `agent-skills` plugin.
 
-Create `com.github.copilot\agents\<agent-name>.agent.md` with the appropriate frontmatter and instructions.
+## Dynamic workflows
 
-See [creating custom agents](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli). Agent definitions are Copilot-specific; they are not portable Agent Plugins 1.0 components.
+[Dynamic workflows](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/use-dynamic-workflows) require experimental features. They can use multiple agents and AI credits.
 
-### Commands
-
-Create `com.github.copilot\commands\<command-name>.md` with YAML `description` frontmatter followed by the prompt instructions. The CLI registers it as `/oskar-tools:<command-name>`. Do not add a `commands` path field to the Agent Plugins 1.0 manifest; the namespaced directory is its fixed Copilot-specific location.
-
-Keep shared engineering workflows in upstream skills rather than duplicating them in command adapters. The standalone lifecycle is implemented in its dynamic workflow and is not an adapter for an upstream skill. Refer to installed skills by their discovered names, not hardcoded cache paths. Document new dependencies and retain upstream attribution when adapting third-party commands. See the [engineering workflow commands](#engineering-workflow-commands) for loading, arguments, and permission boundaries.
-
-### Dynamic workflows
-
-[Dynamic workflows](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/use-dynamic-workflows) are Copilot extensions. Create `com.github.copilot\extensions\<extension-name>\extension.mjs` that registers workflows with `defineWorkflow` and `joinSession` from `@github/copilot-sdk/extension`. The current docs do not list this location for Agent Plugins 1.0; it matches the plugins bundled with the Copilot app. Do not add an `extensions` path field to `plugin.json`; in Agent Plugins 1.0 that field holds namespaced client data, not paths. Extensions run local code, so review them like hooks.
-
-The `hello-world` workflow spawns no subagents and uses no AI credits. Verified with CLI **1.0.105** after an isolated plugin installation:
+The `hello-world` workflow uses no agents or AI credits:
 
 ```powershell
 copilot --experimental workflow run hello-world --args '{"name":"Oskar"}'
 ```
 
-It returns `{"greeting":"Hello, Oskar!","source":"oskar-tools plugin"}`. In an interactive session, enable experimental features and ask Copilot to run the `hello-world` dynamic workflow.
+In an interactive session, enable experimental features and ask Copilot to run `hello-world`.
 
-#### Battle plan
+### Battle plan
 
-`battle-plan` creates and compares three plans in parallel. Each plan is reviewed against the request for missing requirements, gaps, errors and ambiguities. Feedback is used to revise the plan until the review finds no problems or the iteration limit is reached. The result reports any remaining findings. The workflow requires the installed `plan-change` skill.
+`battle-plan` creates and reviews three plans in parallel. A judge compares the plans and their investigation findings with the request and available code, chooses the best plan, and selects useful additions from the others. The final plan includes those additions and reports remaining review findings. It does not implement the plan.
 
-Start with `/oskar-tools:battle-plan <question>` or invoke the installed `battle-plan` skill. It runs up to three reviews per plan by default; specify another positive number to change the limit. The skill selects available GPT Luna, MAI Code Flash, Claude Haiku, GPT Sol and Claude Sonnet models and asks for a replacement if a family is unavailable.
+Start with `/oskar-tools:battle-plan <question>`. The workflow requires the installed `plan-change` skill. It runs up to three reviews per plan by default; specify another positive number to change the limit.
 
-The skill's workflow-wide `maxAiCredits` limit is `100 + 60 * iterations`, or 280 credits by default. The limit is soft and post-paid, so parallel work can settle above it. Direct workflow calls use a 160-credit limit regardless of iteration count unless overridden through the SDK.
+Investigation findings are not passed directly to Review or Synthesize. This is not a confidentiality guarantee: agents share tools and can repeat information in their responses. The workflow asks agents to plan, but does not enforce read-only access or worktree isolation; include task-specific boundaries in the request.
 
-The workflow asks agents to plan, not implement, but does not enforce read-only access or provide worktree isolation. Include task-specific boundaries in the request. To start the workflow directly, provide a non-empty `question` and `models` with three `plan` models and one `judge` model. The optional `iterations` is a positive integer and defaults to 3.
+The skill sets a soft, post-paid credit limit of `100 + 60 * iterations` for the whole workflow. Direct calls default to 160 credits unless overridden through the SDK. Parallel work can settle above the limit.
 
-```powershell
-copilot --experimental workflow run battle-plan --args '{"question":"Compare approaches to this problem. Plan and review only; do not edit files.","iterations":1,"models":{"plan":["gpt-6-luna","mai-code-1.1-flash","claude-haiku-5.5"],"judge":"gpt-6.1-sol"}}'
-```
+To start the workflow directly, provide a non-empty `question`, three `plan` models and one `judge` model. The optional `iterations` defaults to 3. Replace the model placeholders with IDs available in your session:
 
 ```powershell
-node --test tests\battle-plan.tests.mjs
+copilot --experimental workflow run battle-plan --args '{"question":"Compare approaches to this problem. Plan and review only; do not edit files.","iterations":1,"models":{"plan":["<model-1>","<model-2>","<model-3>"],"judge":"<judge-model>"}}'
 ```
 
-#### Exhaustive tasks
+### Exhaustive tasks
 
-`exhaustive-task` grinds through a task that agents tend to abandon early, such as "find every Azure DevOps integration", "list every difference between the design and the implementation" or "update packages in every repository under C:\repos, then change X in Program.cs". It automates asking an agent "did you find everything?" until it stops finding things, so cheaper models can handle investigations that otherwise need stronger ones. Each round is a fresh agent that sees the ledger so far:
+Start `/oskar-tools:exhaustive-task <task>` for broad searches or repeated changes across files or repositories. It reviews results in rounds and performs a final check. Completion means the agents stopped finding new results, not that completeness is proven.
 
-**Unit rounds (one batch of files or repositories each) -> review rounds with changing search strategies until `quietRounds` consecutive rounds find no new progress -> final read-only verification, which can reject findings and reopen the search.** New findings and changes always count as progress. With `coverage: "occurrences"`, new locations on known findings also count; with `coverage: "findings"`, they are saved but do not extend the search. Rounds that change files are verified; rounds that only record findings cost a single agent call. There is no commit step: changes stay uncommitted unless the goal asks workers to commit.
-
-Start with `/oskar-tools:exhaustive-task <task>` or invoke the installed `exhaustive-task` skill. `skills\exhaustive-task\SKILL.md` owns preparation: it clarifies goal and acceptance, chooses mode, coverage and ledger location, uses default batch sizes unless overridden, asks about an optional round ceiling and whether workers should commit, and obtains explicit launch approval. It selects coverage from the goal and only asks when ambiguous: a catalogue of unique UI component types uses `findings`; finding every button or replacing Y everywhere uses `occurrences`. Execution then runs autonomously until completion, a blocker, a runtime limit or a round checkpoint.
+Before launch, agree on the goal, acceptance criteria, scope, findings ledger, models, optional round ceiling, and whether workers may commit. Choose `findings` coverage for unique kinds of result or `occurrences` for every instance. The skill requests explicit launch approval.
 
 Modes:
 
 | Mode | Units | `paths` |
 | --- | --- | --- |
-| `files` | Tracked and non-ignored untracked files in the current repository, enumerated by Git | Repository-relative files/directories; `["."]` for the whole repository. Run from the worktree root. |
-| `repos` | Git repositories found under `paths` (depth 4; skips hidden, `node_modules`, `bin`, `obj`, `dist`, `build` and `packages`) | Absolute directories |
+| `files` | Tracked and non-ignored untracked files in the current repository | Repository-relative files/directories; `["."]` for the whole repository. Run from the worktree root. |
+| `repos` | Git repositories under `paths`, up to four levels deep | Absolute directories |
 | `search` | None; only review rounds | Optional absolute directories containing the repositories that may change. Defaults to the current directory. |
 
-Code, not an agent, enumerates units and splits them into batches, so every unit is assigned to exactly one round. Each Work report must list exactly its batch as processed. Afterwards review rounds search for missed findings or remaining changes, each with a strategy different from earlier rounds. Even a single scoped file receives review rounds and final verification after its unit pass. Reviews record every new finding or location but make at most `batchSize` changes; findings are never capped by batch size.
-
-Prefer `search` for semantic discovery, including identifying UI components or comparing against a design, even when the sources are files. Use `files` when explicit file-by-file coverage is needed. `search` skips unit enumeration and is usually the cheapest choice for discovery: with the defaults, one productive round, two quiet rounds and the final verification make four agent calls. Export a design to a file first if needed, since workflow agents cannot open canvases. Batch size has no effect on read-only search, so the skill neither asks about it nor includes it in that launch summary. For other tasks, it shows the relevant default and its meaning before launch, allowing an override without a separate batch question.
+Use `search` for discovery, such as finding integrations or comparing a design with code; export material from a canvas to a file first. Use `files` for explicit file-by-file coverage. `files` excludes symlinked or junctioned directories. `repos` skips hidden directories and `node_modules`, `bin`, `obj`, `dist`, `build`, and `packages`.
 
 ```powershell
 copilot --experimental workflow run exhaustive-task --args '{"goal":"Find every occurrence of an Azure DevOps integration","acceptance":"Each integration lists every source occurrence, purpose, authentication and API used, verified against the source.","mode":"search","coverage":"occurrences","ledgerPath":"C:\\session-artifacts\\ado-integrations.md"}'
 ```
 
-Arguments: `goal`, `acceptance`, `mode` and an absolute `ledgerPath` are required. Optional `coverage` (`findings` or `occurrences`; defaults to `findings` for backward compatibility), `paths` (required for `files` and `repos`), `batchSize` (default 5 files, 1 repository or 5 changes per review round), `quietRounds` (default 2), `maxRounds` (no default), `model` (workers) and `verifyModel` (verification; defaults to `model`). The skill always passes coverage explicitly from the agreed goal. Without models the runtime preferences apply. Direct invocation skips the skill's preparation; the caller must select appropriate coverage and arrange equivalent approval.
+Arguments: `goal`, `acceptance`, `mode` and an absolute `ledgerPath` are required. Optional `coverage` (`findings` or `occurrences`; defaults to `findings`), `paths` (required for `files` and `repos`), `batchSize` (default 5 files, 1 repository or 5 changes per review round), `quietRounds` (default 2), `maxRounds` (no default), `model` (workers) and `verifyModel` (verification; defaults to `model`). The skill selects coverage from the agreed goal. Without models the runtime preferences apply. Direct invocation skips the skill's preparation; the caller must select appropriate coverage and arrange equivalent approval.
 
-The ledger is a workflow-owned Markdown file with coverage, findings (stable kebab-case IDs, locations, details), changes, every review round's strategy (quiet ones too, so later rounds and runs do not repeat them), rejected finding IDs and processed units, plus an embedded JSON state block. Agents return findings; the code merges duplicates by ID and writes the file, so earlier results cannot be lost. Repeated locations are deduplicated. For occurrence searches, agents must use precise, consistent source anchors that distinguish instances within the same file, rather than rewording a known location. Ordinary rounds only add locations to a known finding; a Work attempt that repairs a verification complaint gets the full findings, and each finding it returns replaces the ledger entry whole (title, locations and details), so repairs can drop wrong locations. Findings rejected by either verifier, including by an earlier attempt in the same round, are removed and cannot be re-added. Text in the state cannot break the embedded block. Starting a new run with the same `ledgerPath`, goal, acceptance, mode, coverage and repository or `paths` roots continues after the processed units, and progress counts units from earlier `paths` too; another goal, acceptance, mode, coverage, repository or root, or a non-ledger file is rejected. Legacy ledgers without coverage retain `findings` semantics; choose a fresh ledger to switch to `occurrences`. The `files` manifest excludes the ledger and files under symlinked or junctioned directories, and matches `paths` case-insensitively on Windows. Keep the ledger outside the repository unless it is a deliverable: a ledger inside a repository changes the files every productive round and so triggers a Verify agent.
+The ledger records findings and progress. To continue a task, use the same `ledgerPath`, goal, acceptance criteria, mode, coverage, and repository or paths. Choose a new ledger for a different task or coverage. Keep the ledger outside the repository unless it is a deliverable.
 
-When a round changes file contents, the verifier checks its findings and changes and runs relevant non-mutating checks. An incomplete verdict sends its repair instructions back to Work, up to three attempts per round; findings and changes from earlier attempts are kept unless a later attempt restates them. Findings-only rounds skip this; the final verification instead checks every finding and runs its own searches. An incomplete final verdict starts another review round with its instructions, up to three final verifications. Workers stage and commit only when the goal asks for commits, and then commit their own changes atomically in Work, before verification, never on a default or detached branch; the code blocks a round when Work switches branches or commits on a detached branch or the default branch (`origin/HEAD`, else `main` or `master`). Verifiers never commit; the code compares `git status --porcelain=v2 --branch` around verification, so verifier commits, staging or branch switches block. Otherwise every change and an in-repository ledger stay uncommitted for the user. When commits are wanted, the skill offers to create a feature branch for repositories on their default branch. After a blocked round it asks whether to keep or reverse the edits. Files that were dirty before the run are user work: agents must not revert or commit them. The code detects content changes with a temporary Git index (`git add -A` + `git write-tree` without touching the real index), so commits alone do not count as changes, and blocks if Verify changes file contents. A blocked round leaves its units unprocessed in the ledger, so the next run repeats them. The runtime journals preparation, each round's starting snapshot and the checkpoint baseline, so a resumed run still verifies edits from an interrupted round. When a blocked round leaves edits behind, the ledger records that round's starting point and files; the next run treats those edits as workflow work rather than user work, so they are verified even if the worker changes nothing more. A continued ledger may have no scoped files left.
+Changes remain uncommitted unless the goal explicitly asks workers to commit. Requested commits require a feature branch and happen before verification. Files dirty before the run are user work and must not be reverted or committed by workers. Review any edits left by a blocked run before deciding whether to keep or undo them.
 
-Optional `maxRounds` pauses after every that many rounds while work remains. The skill recommends 10 for `search` and, for `files` and `repos`, the number of unit batches plus 5 review rounds. The main conversation must obtain approval before resuming the same run; edits while paused block the resumed round. Blocked results include `reason`, `remainingUnits`, `needsInput` and the ledger path. Resolve the cause and start a new run with the same ledger.
+Optional `maxRounds` pauses the run after that many rounds while work remains; resuming requires approval. Edits made while paused block the resumed round. If a run is blocked, resolve its reported cause before starting a new run with the same ledger.
 
-Limitations: findings and coverage are model reports checked for structure, batch coverage and file stability, not proof of semantic completeness. Unit rounds that only record findings are not verified individually, so a worker that skims a batch is caught only if the final verification notices. Review rounds stop when agents stop finding things, not when completeness is proven. Commits a goal asks for are made before verification, and the code does not check them. There is no declared resource ceiling; set runtime limits when needed. Agents share the working tree and run sequentially. The workflow cannot tell your edits from an agent's: anything that changes in scope during a round, including your own edits, counts as that round's work, so avoid editing in-scope files while it runs. No role may push, merge, deploy, reset hard, rewrite history, blindly restore files from another branch or change remote systems.
+Findings-only rounds are checked at final verification rather than individually. Agents share the working tree and cannot distinguish your edits from theirs during a round, so avoid editing in-scope files while it runs. The workflow does not authorize pushing, merging, deployment, or destructive Git operations.
 
-Run the workflow contract tests without model requests:
+### Addy lifecycle
 
-```powershell
-node --test tests\exhaustive-task.tests.mjs
-```
-
-They run a simulated workflow context against real temporary Git repositories: batch coverage, review termination, final verification, model selection, duplicate merging, rejected findings, repairs, pre-existing edits and worker commits, repository discovery, ledger continuation and round checkpoints. `tests\commands.tests.ps1 -Runtime` checks installed skill/workflow registration. Neither establishes live model compliance.
-
-#### Addy lifecycle
-
-The `addy-lifecycle` workflow implements the six stages in [Addy's lifecycle](https://skills.addy.ie/lifecycle/): **Define -> Plan -> Build -> Verify -> Review -> Ship**. The packaged skill and command only start the workflow; neither prepares artifacts nor runs lifecycle phases. The workflow owns the phase orchestration, but follows the upstream model of composing installed skills for specification, planning, implementation, testing and shipping. Its Review phase uses the packaged code, security and test personas, whose methods also require their documented `agent-skills:*` dependencies.
+The `addy-lifecycle` workflow follows [Addy's lifecycle](https://skills.addy.ie/lifecycle/): **Define -> Plan -> Build -> Verify -> Review -> Ship**. It requires the separately installed `agent-skills` plugin.
 
 Start an experimental interactive session and provide a feature idea or existing specification:
 
@@ -338,64 +237,25 @@ Start an experimental interactive session and provide a feature idea or existing
 /oskar-tools:addy-lifecycle Describe the feature here
 ```
 
-The dynamic workflow can also be started directly with only a `goal` argument. It creates a pre-edit Git baseline itself; callers do not need to prepare a spec or provide a baseline path. Git observations and returned spec paths are relative to the repository root, including when launched from a subdirectory. A newly initialized repository without an initial commit is supported.
+The workflow can also be started directly with a `goal` argument. It pauses for approval of the spec and plan before building, and commits approved artifacts and verified tasks. Ship assesses readiness and provides a rollback plan; it does not push, merge, or deploy.
 
-Approval messages include a run-specific revision request path under `tasks\`. The optional `revisionPath` argument overrides it with a repository-root-relative path, for example `tasks\lifecycle-revisions.json`. Leave that file absent when starting. While paused, write feedback such as `{ "plan": "Split the first task into smaller slices" }` or `{ "define": "Include the offline use case" }` there and resume the **same run**. Keep prior feedback fields when adding more feedback. Each observed feedback transition receives a durable revision generation, including returning to earlier wording; unchanged feedback resumes the pending approval instead. The affected phase runs again with the original baseline and workflow-owned artifacts, then pauses for approval of the revised output. Spec revisions remain pinned to the original selected path. Revision requests do not authorize adopting unrelated user changes. The request file is control input, not a planning artifact to commit.
+Approval messages include a revision request path under `tasks\`. While paused, write feedback such as `{ "plan": "Split the first task into smaller slices" }` or `{ "define": "Include the offline use case" }` to that file and resume the same run. Keep prior feedback fields when adding more feedback. The optional `revisionPath` argument selects a different repository-root-relative path; leave the file absent when starting. A revised spec or plan requires fresh approval.
 
-The stages operate as follows:
+If the workflow needs a decision, review the reported `needsInput` questions and provide feedback before resuming. A paused checkpoint is not approval; resume without new feedback only after approving the displayed spec or plan. Inspect the worktree and Git state before retrying an interrupted or blocked run, and preserve unrelated user work.
 
-- **Define** reads repository guidance and relevant code, tests and docs. It clarifies scope from the goal, returns unresolved decisions as `needsInput`, and writes a spec without overwriting unrelated work. If the goal refers to an existing tracked spec, it can use that file read-only; requested revisions go to a run-specific copy under `tasks\`, pinned for subsequent revisions, while preserving the original. The workflow pauses at `approve-spec` and logs the actual spec for review; resuming approves that exact unchanged content.
-- **Plan** creates the plan and task list at repository-standard paths (default `tasks\plan.md` and `tasks\todo.md`) and reports their repository-root-relative `artifactPaths`. Tasks include acceptance criteria, verification commands and explicit dependencies. The workflow validates the task graph, snapshots the planning artifacts and pauses at `approve-plan` before any implementation. Changed files cannot reuse the pending approval; submit revision feedback for a new checkpoint. The snapshot is checked again before the plan commit completes and on entry to Build, including after an interruption. Once Build has started, it may record task-status updates without invalidating that approval on replay. Revised specs and plans receive distinct approval checkpoints.
-- **Build** executes the approved finite task list sequentially in dependency order. Each task follows a test-first implementation cycle, records completion only after verification, and earns its own commit.
-- **Verify** runs the integrated acceptance, test, build and applicable type/lint checks in a read-only assessment.
-- **Review** runs independent code, security and test-coverage assessments in parallel. Missing evidence and Critical, High or Required findings block progress.
-- **Ship** provides a read-only launch-readiness decision and rollback plan. It does not deploy, change flags, push or merge.
+Verification and review depend on agent reports and are not independent proof of every claim.
 
-The lifecycle uses `git-workflow-and-versioning` for Git operations, including branch strategy, atomic save-point commits and pre-commit checks. Its spec/plan approval and verified Build gates coordinate with that skill; they do not prohibit appropriate feature branches or commits. The workflow captures the initial HEAD (or no HEAD for an unborn branch), working-tree status and dirty paths, content hashes and index entries before Define writes files. Define's validation detects changes to pre-existing worktree content or staged entries, rather than exempting paths that were already dirty. It also checks staged and unstaged diffs separately and rejects HEAD changes during Define, including a first commit on an unborn branch. These observations are journaled before later approved commits so replay does not misattribute those commits to Define. Workers preserve unrelated user work and the index, and stop if an assignment overlaps it rather than committing it. Push, merge and deployment still require an explicit user-approved Ship action and the necessary repository permissions.
+## Checks
 
-Workflow workers cannot conduct a live interview. When a material decision is required, the workflow logs the `NO-GO` reason and `needsInput` questions and pauses at a durable recovery checkpoint instead of completing the run. Repeated resumes without feedback remain paused. For spec or plan feedback, use the configured revision request file and resume the same run so the original baseline and artifact ownership remain intact; do not start a replacement run over uncommitted artifacts. A paused checkpoint is not approval: resume unchanged feedback only after the user approves the exact logged spec or plan. Resuming with new feedback requests a revision and another approval checkpoint, not approval of the previous output. A runtime exception or interrupted edit is distinct from a `NO-GO`; inspect the worktree and Git state before retrying.
-
-For initially dirty submodules and pre-existing untracked nested Git checkouts, protected-state observations include nested HEAD, index entries and tracked/untracked file contents, including nested submodules and checkouts. Baseline status explicitly disables submodule-ignore settings so those edits cannot disappear from protection. Merely retaining the outer gitlink or directory metadata does not count as preserving the user's work. Define feedback can also retry a failed initial specification attempt, including a reported spec that was never created.
-
-Define safety observations run even for blocked or incomplete reports, including clarification attempts and spec revisions. Detected HEAD changes, overwritten user work, out-of-scope edits or departures from the pinned spec path remain blocking across later feedback; clarification must not adopt those edits as workflow-owned artifacts. Such safety failures require inspecting and restoring the worktree before deliberately starting a clean run. Ordinary clarification and spec revisions continue within the original run.
-
-Only initially staged, unstaged or untracked paths are protected from assignment edits. Build may modify clean tracked source files within its approved scope. The complete tracked-path inventory and protected-state fingerprints stay in the runtime journal, not in worker prompts.
-
-These are report and execution gates, not independent proof of model claims. The workflow requires cited artifacts, actual command evidence for checks, full commit IDs and passing evidence. It does not independently verify every claim in an agent report, and unavailable measurements must be reported as unavailable. Its `Ship` phase is a readiness assessment, not Addy's deployment/rollout procedure.
-
-##### Workflow checks
-
-Run the workflow contract tests without model requests:
+Run the plugin checks from the repository root:
 
 ```powershell
-node --test tests\lifecycle.tests.mjs
+pwsh -NoProfile -File tests\git-conventions-hooks.tests.ps1
+pwsh -NoProfile -File tests\commands.tests.ps1
+node --test tests\lifecycle.tests.mjs tests\exhaustive-task.tests.mjs tests\battle-plan.tests.mjs
 ```
 
-The tests cover goal-only invocation, spec creation and validation, approval/commit order, baseline capture, question routing, dependency ordering, resume replay, missing reports and failed verification using a simulated workflow context. `tests\commands.tests.ps1 -Runtime` checks installed command and skill registration and rejects invalid workflow arguments without starting model work. Neither check proves live model compliance or actual commit isolation.
-
-### Hooks
-
-Hooks execute external commands. They are configured in `com.github.copilot\hooks\hooks.json` using the version `1` format in the [hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference). Put scripts in `com.github.copilot\hooks\scripts\`. Plugin hooks expand `${PLUGIN_ROOT}`, but user-level hooks leave it as literal text, so hook commands must also work through the global `hooks` mapping. Follow the fallback in the existing `hooks.json`. Because `preToolUse` command hooks deny the call when they fail, a wrong script path blocks every tool call.
-
-Do not use `.github\hooks` for distributable plugin hooks: that location configures the repository itself.
-
-Agent Plugins 1.0 fixes these component locations. Do not add legacy `skills`, `agents`, or `hooks` path fields to `plugin.json`. No MCP configuration is needed unless you separately choose to add a server.
-
-### Instructions and plugin rules
-
-For the global development mapping, add real `*.instructions.md` files to `instructions`. Files without `applyTo` provide general instructions; use YAML frontmatter with an `applyTo` glob for file-scoped instructions. Keep one source file per instruction: the junction exposes the same files globally without copying them.
-
-The current [plugin reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference#components) documents Copilot-specific plugin rules in `com.github.copilot\rules`. However, that route was not functional in our isolated checks with CLI **1.0.101-0**:
-
-- An enabled installed fixture and a `--plugin-dir` fixture did not expose `*.instructions.md` through `instruction list --json`.
-- A mounted fixture containing both `*.instructions.md` and plain `*.md` rules supplied none of their markers to a prompt.
-- Mapping the same directory to an isolated personal `instructions` directory discovered both `*.instructions.md` files, preserved `applyTo: "**/*.ts"`, and ignored plain `*.md`. A prompt with no file operations received the general instruction marker, not the file-scoped one.
-
-Isolated discovery checks with CLI **1.0.103-0** also returned no instruction sources for either an enabled installed plugin or a `--plugin-dir` fixture containing `*.instructions.md` and plain `*.md` rules. As a control, mapping that fixture's rules directory to an isolated personal `instructions` directory discovered both instruction files and preserved `applyTo: "**/README.md"`. These checks establish a discovery limitation, not prompt behavior for every client.
-
-README conventions use a skill rather than plugin rules or a personal instruction file. The root `instructions` directory remains available for separate development-only personal instructions and currently contains only `.gitkeep`. Plugin-rule loading has not been verified for other CLI versions or clients.
-
-Recheck support with your installed CLI before adopting plugin rules. Do not rename, copy, or relocate instructions automatically, remove `applyTo`, or enable another loading route without checking scope and duplicate behavior.
+Add `-Runtime` to `tests\commands.tests.ps1` to check installed component registration; this requires Copilot CLI. These checks do not establish live model compliance.
 
 ## Reference
 

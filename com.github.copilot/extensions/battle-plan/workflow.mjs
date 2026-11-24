@@ -1,10 +1,22 @@
+const planResultInstruction =
+    "Return exactly one JSON object with string fields status, plan, and reason, and a findings array; " +
+    "do not use Markdown fences or surrounding prose. On success, return status ready, " +
+    "the complete Markdown plan in plan (not a summary or file path), and an empty reason. " +
+    "If the plan cannot be completed, return status blocked with an empty plan and a clear reason. " +
+    "Record investigation findings separately from the plan in findings. Each finding must have " +
+    "non-empty string fields id, finding, and reason, a non-empty evidence array of non-empty " +
+    "source strings (file/symbol references, documentation, or observed command output), and status " +
+    "active, resolved, or rejected. Use stable IDs within this branch; reuse an ID to update a finding " +
+    "and explain the change in reason. Return only new or updated findings, or [] if there are none. " +
+    "The workflow appends each round to your private ledger; earlier rounds are preserved. " +
+    "Keep ledger entries and history out of the Markdown plan; include the evidence needed to " +
+    "understand the plan itself. Do not write ledger files or implement changes.";
+
 const firstPlanInstruction =
     "Use the installed plan-change skill by invoking it with the skill tool before planning. " +
-    "Return exactly one JSON object with string fields status, plan, and reason; do not use " +
-    "Markdown fences or surrounding prose. If the skill is unavailable or cannot be loaded, return " +
+    "If the skill is unavailable or cannot be loaded, return " +
     "status blocked, an empty plan, and a clear reason; do not substitute a generic plan. If the " +
-    "plan cannot be completed, return status blocked with a reason. On success, return status ready, " +
-    "the complete Markdown plan in plan (not a summary or file path), and an empty reason.";
+    "skill cannot be loaded, findings may be empty. " + planResultInstruction;
 
 const reviewInstruction =
     "Review the complete plan against the original question: check that it satisfies every " +
@@ -16,16 +28,32 @@ const reviewInstruction =
 
 const revisePlanInstruction =
     "Revise the complete plan to address the review findings while preserving the original " +
-    "question's requirements and scope. Return the complete updated Markdown plan, not a summary, " +
-    "diff, or file path. Do not implement changes.";
+    "question's requirements and scope. Consult your branch's ledger and update findings whose " +
+    "evidence or conclusions changed. Return the complete updated Markdown plan in plan, not a summary, " +
+    "diff, or file path. Do not implement changes. " + planResultInstruction;
 
 const judgeInstruction =
     "Compare the plans against the original question and choose the most suitable plan. " +
+    "Use all three complete plans and their accumulated ledgers, checking claims against available " +
+    "repository code and documentation rather than treating ledger entries as facts. Use the latest " +
+    "entry for each branch-local finding ID while considering its history and status. " +
     "Weigh the remaining review findings and each branch's stopReason; a plan at iteration_limit " +
-    "still has unresolved findings and must not be described as approved.";
+    "still has unresolved findings and must not be described as approved. " +
+    "Decide what concrete additions to take from each of the other two plans. " +
+    "Return exactly one JSON object with winner (an integer branch number 1-3), reason (a non-empty " +
+    "string), and takeFromOthers (exactly one entry for each other branch). Each entry must have " +
+    "branch, reason (a non-empty rationale, including why nothing should be taken if additions is " +
+    "empty), and additions (an array of objects with non-empty string fields change, sourceSection, " +
+    "and rationale). Reference sections of the supplied plans so Synthesize can use them directly. " +
+    "Return only the decision and supporting rationale, not raw ledger entries, IDs, or history. " +
+    "Do not use Markdown fences, write files, or implement changes.";
 
 const synthesizeInstruction =
-    "Produce the complete final plan using the original question, plans, reviews, and judgment. " +
+    "Produce the complete final Markdown plan using the original question, all three complete " +
+    "plans, reviews, and judgment. Use judgment.winner as the base and apply the additions selected " +
+    "in judgment.takeFromOthers from the referenced plan sections. Follow Judge's decision; do not " +
+    "choose the winner again. Reconcile overlapping selected additions and explicitly report any " +
+    "contradiction you cannot reconcile without changing that decision. " +
     "Explicitly report any remaining review findings by branch, including those from branches " +
     "that reached iteration_limit. Do not describe a plan with unresolved findings as approved. " +
     "Do not implement changes.";
@@ -74,6 +102,27 @@ export const battlePlan = {
             return result;
         };
 
+        const parseObject = (response, label, kind) => {
+            if (typeof response !== "string") {
+                throw new Error(`${label} failed to return a valid ${kind}.`);
+            }
+            let result;
+            try {
+                result = JSON.parse(response);
+            } catch {
+                throw new Error(`${label} returned invalid JSON for its ${kind}.`);
+            }
+            if (result === null || typeof result !== "object" || Array.isArray(result)) {
+                throw new Error(`${label} returned an invalid ${kind}.`);
+            }
+            return result;
+        };
+        const validFinding = (finding) => finding !== null && typeof finding === "object"
+            && !Array.isArray(finding) && isName(finding.id) && isName(finding.finding)
+            && isName(finding.reason) && ["active", "resolved", "rejected"].includes(finding.status)
+            && Array.isArray(finding.evidence) && finding.evidence.length > 0
+            && finding.evidence.every(isName);
+
         ctx.phase("Plan / Review");
         // Each plan is reviewed by the previous branch's plan model, so no branch reviews itself.
         const results = await ctx.parallel(models.plan.map((planModel, index) => async () => {
@@ -81,44 +130,43 @@ export const battlePlan = {
             const reviewModel = models.plan[(index + 2) % 3];
             let plan = null;
             let review = null;
+            const ledger = [];
             for (let iteration = 1; iteration <= iterations; iteration++) {
                 const options = { label: `Plan ${branch}:${iteration}`, model: planModel };
-                const context = { question, plan, review };
-                if (iteration === 1) {
+                const context = { question, plan, review, ledger };
+                try {
                     const response = await ctx.agent(
-                        `Plan\n${firstPlanInstruction}\n\n${JSON.stringify(context)}`,
+                        `Plan\n${iteration === 1 ? firstPlanInstruction : revisePlanInstruction}\n\n${JSON.stringify(context)}`,
                         options,
                     );
-                    if (typeof response !== "string") {
-                        return { failure: `${options.label} failed to return a valid plan-change result.` };
-                    }
-                    let result;
-                    try {
-                        result = JSON.parse(response);
-                    } catch {
-                        return { failure: `${options.label} returned invalid JSON for its plan-change result.` };
-                    }
-                    if (result === null || typeof result !== "object" || Array.isArray(result)
-                        || typeof result.status !== "string" || typeof result.plan !== "string"
+                    const kind = iteration === 1 ? "plan-change result" : "revised plan result";
+                    const result = parseObject(response, options.label, kind);
+                    if (typeof result.status !== "string" || typeof result.plan !== "string"
                         || typeof result.reason !== "string") {
-                        return { failure: `${options.label} returned an invalid plan-change result.` };
+                        return { failure: `${options.label} returned an invalid ${kind}.` };
                     }
                     if (result.status === "blocked") {
                         const reason = isName(result.reason) ? result.reason : "plan-change was blocked without a reason.";
                         return { failure: `${options.label} blocked: ${reason}` };
                     }
                     if (result.status !== "ready" || !isName(result.plan)) {
-                        return { failure: `${options.label} returned an empty or invalid plan-change plan.` };
+                        return { failure: `${options.label} returned an empty or invalid plan.` };
                     }
                     if (isName(result.reason)) {
                         return { failure: `${options.label} reported a problem: ${result.reason}` };
                     }
-                    plan = result.plan;
-                } else {
-                    plan = await agent(`Plan\n${revisePlanInstruction}`, context, options);
-                    if (!isName(plan)) {
-                        return { failure: `${options.label} returned an empty or invalid revised plan.` };
+                    if (!Array.isArray(result.findings) || !result.findings.every(validFinding)
+                        || new Set(result.findings.map(({ id }) => id)).size !== result.findings.length) {
+                        return { failure: `${options.label} returned invalid ledger findings.` };
                     }
+                    // Store only the defined fields; agent-added data never becomes downstream context.
+                    const findings = result.findings.map(({ id, finding, evidence, status, reason }) => ({
+                        id, finding, evidence, status, reason,
+                    }));
+                    ledger.push({ iteration, findings });
+                    plan = result.plan;
+                } catch (error) {
+                    return { failure: `${options.label} failed: ${error.message}` };
                 }
                 const reviewOptions = { label: `Review ${branch}:${iteration}`, model: reviewModel };
                 const response = await ctx.agent(
@@ -138,10 +186,10 @@ export const battlePlan = {
                     return { failure: `${reviewOptions.label} returned invalid review findings.` };
                 }
                 if (review.findings.length === 0) {
-                    return { plan, review, stopReason: "approved" };
+                    return { branch, plan, review: { findings: review.findings }, stopReason: "approved", ledger };
                 }
             }
-            return { plan, review, stopReason: "iteration_limit" };
+            return { branch, plan, review: { findings: review.findings }, stopReason: "iteration_limit", ledger };
         }));
         const failedPlan = results.find((result) => result?.failure);
         if (failedPlan) {
@@ -152,9 +200,38 @@ export const battlePlan = {
         }
 
         ctx.phase("Judge");
-        const judgment = await agent(`Judge\n${judgeInstruction}`, { question, results }, { label: "Judge", model: models.judge });
+        const response = await agent(`Judge\n${judgeInstruction}`, { question, results }, { label: "Judge", model: models.judge });
+        const decision = parseObject(response, "Judge", "judgment");
+        const validAddition = (addition) => addition !== null && typeof addition === "object"
+            && !Array.isArray(addition) && isName(addition.change)
+            && isName(addition.sourceSection) && isName(addition.rationale);
+        if (![1, 2, 3].includes(decision.winner) || !isName(decision.reason)
+            || !Array.isArray(decision.takeFromOthers) || decision.takeFromOthers.length !== 2
+            || !decision.takeFromOthers.every((entry) => entry !== null && typeof entry === "object"
+                && !Array.isArray(entry) && [1, 2, 3].includes(entry.branch)
+                && entry.branch !== decision.winner && isName(entry.reason)
+                && Array.isArray(entry.additions) && entry.additions.every(validAddition))
+            || new Set(decision.takeFromOthers.map(({ branch }) => branch)).size !== 2) {
+            throw new Error("Judge returned an invalid judgment.");
+        }
+        const judgment = {
+            winner: decision.winner,
+            reason: decision.reason,
+            takeFromOthers: decision.takeFromOthers.map(({ branch, reason, additions }) => ({
+                branch,
+                reason,
+                additions: additions.map(({ change, sourceSection, rationale }) => ({
+                    change, sourceSection, rationale,
+                })),
+            })),
+        };
 
         ctx.phase("Synthesize");
-        return agent(`Synthesize\n${synthesizeInstruction}`, { question, results, judgment }, { label: "Synthesize", model: models.plan[0] });
+        const plans = results.map(({ branch, plan, review, stopReason }) => ({
+            branch, plan, review, stopReason,
+        }));
+        const synthesis = await agent(`Synthesize\n${synthesizeInstruction}`, { question, results: plans, judgment }, { label: "Synthesize", model: models.plan[0] });
+        if (!isName(synthesis)) throw new Error("Synthesize returned an empty or invalid plan.");
+        return synthesis;
     },
 };
