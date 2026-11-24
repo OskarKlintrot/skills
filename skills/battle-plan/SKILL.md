@@ -1,6 +1,6 @@
 ---
 name: battle-plan
-description: Start the battle-plan dynamic workflow, which runs three parallel plan/review loops, judges the plans, and synthesizes the result.
+description: Start the battle-plan dynamic workflow, which runs three parallel plan/review loops, judges and synchronizes the plans, and synthesizes the final plan with plan-change.
 ---
 
 # Battle plan
@@ -11,14 +11,17 @@ stops early when Review finds no problems. Review checks the complete plan
 against the original request and reports gaps, errors, contradictions, and
 ambiguities for Plan to fix in the next round.
 
-If findings remain at the iteration limit, continue to Judge and Synthesize with
-the latest reviewed plans and report the remaining findings in the final result.
+If findings remain at the iteration limit, continue to Judge, Synchronize and
+Synthesize with the latest reviewed plans and report the remaining findings in
+the final result.
 
 Each Plan branch keeps an accumulated findings ledger in workflow memory, not
 in files. Findings include stable branch-local IDs, evidence sources, status and
 reasons for changes; earlier rounds remain available to that branch and Judge.
 These investigation findings are separate from Review's correction feedback.
 Review receives only the question and its branch's complete plan, not the ledger.
+Each complete plan passes unchanged from Plan to Review, Judge, and Synchronize.
+Only a new Plan round revises a branch's plan in response to Review.
 
 Judge receives all three complete plans, reviews, stop reasons and ledgers. It
 checks the evidence against available code and documentation, chooses the best
@@ -26,13 +29,25 @@ plan, and decides which concrete additions to take from each alternative, or why
 nothing should be taken. Its structured decision references sections of the plans
 without reproducing raw ledger entries or history.
 
-Synthesize receives all three complete plans, reviews and stop reasons alongside
+Synchronize receives all three complete plans, reviews and stop reasons alongside
 Judge's decision, but no ledgers. It uses the chosen plan as the base, incorporates
 the selected additions and reports conflicts it cannot reconcile without changing
-the decision. It does not choose the winner again. The final output is a complete
-Markdown plan, not an implementation or approval.
+the decision. It does not choose the winner again and returns a complete Markdown
+draft.
 
-The workflow validates Plan findings and Judge's decision before proceeding.
+Synthesize is the final step. It receives the same unchanged plans, reviews, stop
+reasons and decision together with the synchronized draft. It invokes the installed
+`plan-change` skill and follows its full template and instructions to compose
+everything into the final plan, keeping the draft's content and remaining review
+findings. If the skill cannot be loaded, the workflow fails with the reason rather
+than returning a generic plan.
+
+Return the workflow's complete final Markdown plan verbatim to the user. Do not
+summarize, translate, or reformat it after Synthesize. The plan is not an
+implementation or approval.
+
+The workflow validates Plan findings, Judge's decision, Synchronize's draft, and
+Synthesize's result status before proceeding.
 Ledger separation applies to workflow inputs; it is not tool or filesystem
 isolation and cannot prevent an agent from copying ledger text into a plan.
 Ledgers do not persist across separate runs, and their growing history consumes
@@ -58,7 +73,7 @@ Call `run_dynamic_workflow` with `name` set to `battle-plan` and these `args`:
 ```
 
 The workflow also uses `models.plan[0]`, the newest available GPT Luna model,
-for Synthesize after Judge.
+for Synchronize and Synthesize after Judge.
 
 Set the call's separate, top-level `limits.maxAiCredits` to the number
 `100 + 60 * iterations`: 160 for one iteration, 220 for two, and 280 for the

@@ -39,6 +39,9 @@ function resultFor({ stage, label }) {
     if (stage === "Review") return JSON.stringify(reviewFor(label));
     if (stage === "Plan") return planResult(`${label} result`);
     if (stage === "Judge") return JSON.stringify(judgmentFor());
+    if (stage === "Synthesize") {
+        return JSON.stringify({ status: "ready", plan: `${label} result`, reason: "" });
+    }
     return `${label} result`;
 }
 
@@ -72,8 +75,9 @@ test("three independent loops feed final results into judging and synthesis", as
     assert.equal(battlePlan.meta.limits.maxAiCredits, 160);
     const h = harness({ question: "A question", iterations: 2, models });
     assert.equal(await h.run(), "Synthesize result");
-    assert.equal(h.calls.length, 14);
-    assert.deepEqual(h.phases, ["Plan / Review", "Judge", "Synthesize"]);
+    assert.equal(h.calls.length, 15);
+    assert.deepEqual(h.phases, ["Plan / Review", "Judge", "Synchronize", "Synthesize"]);
+    assert.deepEqual(battlePlan.meta.phases.map(({ title }) => title), h.phases);
     assert.equal(new Set(h.calls.map(({ label }) => label)).size, h.calls.length);
     for (const [index, [model, reviewModel]] of [
         ["p1", "p3"],
@@ -105,21 +109,31 @@ test("three independent loops feed final results into judging and synthesis", as
         plan: `Plan ${branch}:2 result`, review: reviewFor(`Review ${branch}:2`),
         stopReason: "iteration_limit",
     }));
-    const judge = h.calls.at(-2);
+    const judge = h.calls.at(-3);
     assert.equal(judge.stage, "Judge");
     assert.equal(judge.label, "Judge");
     assert.equal(judge.model, "j-model");
     assert.deepEqual(judge.context, { question: "A question", results: withLedgers(results) });
     assert.match(judge.instruction, /remaining review findings/);
     assert.match(judge.instruction, /must not be described as approved/);
+    const synchronize = h.calls.at(-2);
+    assert.equal(synchronize.stage, "Synchronize");
+    assert.equal(synchronize.label, "Synchronize");
+    assert.equal(synchronize.model, "p1");
+    assert.deepEqual(synchronize.context, { question: "A question", results, judgment: judgmentFor() });
+    assert.doesNotMatch(synchronize.instruction, /plan-change/);
     const synthesis = h.calls.at(-1);
     assert.equal(synthesis.stage, "Synthesize");
     assert.equal(synthesis.label, "Synthesize");
     assert.equal(synthesis.model, "p1");
-    assert.deepEqual(synthesis.context, { question: "A question", results, judgment: judgmentFor() });
-    assert.match(synthesis.instruction, /report any remaining review findings by branch/);
-    assert.match(synthesis.instruction, /iteration_limit/);
-    assert.match(synthesis.instruction, /Do not describe a plan with unresolved findings as approved/);
+    assert.deepEqual(synthesis.context, {
+        question: "A question", results, judgment: judgmentFor(), synchronized: "Synchronize result",
+    });
+    for (const call of [synchronize, synthesis]) {
+        assert.match(call.instruction, /report any remaining review findings by branch/);
+        assert.match(call.instruction, /iteration_limit/);
+        assert.match(call.instruction, /Do not describe a plan with unresolved findings as approved/);
+    }
 });
 
 test("first plans use plan-change and pass complete Markdown to review", async () => {
@@ -171,30 +185,84 @@ test("first plans use plan-change and pass complete Markdown to review", async (
     }
 });
 
+test("synthesis loads plan-change and returns the complete final plan verbatim", async () => {
+    const finalPlan = [
+        "## Summary",
+        "",
+        "```diff",
+        " Plan / Review",
+        " Judge",
+        " Synthesize",
+        "+  use plan-change",
+        "```",
+        "",
+        "## Evidence",
+        "",
+        "- **Before:** Synthesize returns unformatted text.",
+        "  **After:** The regression test will check the complete final plan.",
+        "",
+        "## Test Cases",
+        "",
+        "1. Preserve the final plan, including whitespace and code blocks.",
+        "",
+        "## Out-of-Scope",
+        "",
+        "- Implementing the generated plan.",
+        "",
+        "**Edge Cases:** Changes to other workflows.",
+        "",
+        "## Merge Danger",
+        "",
+        "**Door:** two-way",
+        "",
+        "**Blast Radius:** workflow",
+        "",
+    ].join("\r\n");
+    const h = harness({ question: "Q", iterations: 1, models }, (call) =>
+        call.stage === "Synthesize"
+            ? JSON.stringify({ status: "ready", plan: finalPlan, reason: "" })
+            : resultFor(call));
+    assert.equal(await h.run(), finalPlan);
+    assert.deepEqual(h.phases, ["Plan / Review", "Judge", "Synchronize", "Synthesize"]);
+    assert.equal(h.calls.length, 9);
+    const synthesis = h.calls.at(-1);
+    assert.equal(synthesis.stage, "Synthesize");
+    assert.match(synthesis.instruction, /plan-change/);
+    assert.match(synthesis.instruction, /skill tool/i);
+    assert.match(synthesis.instruction, /template, tone, evidence/);
+    assert.match(synthesis.instruction, /unavailable|cannot be loaded/);
+    assert.match(synthesis.instruction, /exactly one JSON object/);
+    assert.match(synthesis.instruction, /complete final Markdown plan/);
+    assert.equal(synthesis.schema, undefined);
+});
+
 test("empty findings stop all branches after their first review", async () => {
     const h = harness({ question: "Q", models }, (call) =>
         call.stage === "Review" ? JSON.stringify({ findings: [] }) : resultFor(call));
     assert.equal(await h.run(), "Synthesize result");
-    assert.equal(h.calls.length, 8);
+    assert.equal(h.calls.length, 9);
     assert.ok(!h.calls.some(({ label }) => label.endsWith(":2")));
     const results = [1, 2, 3].map((branch) => ({
         branch,
         plan: `Plan ${branch}:1 result`, review: { findings: [] }, stopReason: "approved",
     }));
-    assert.deepEqual(h.calls.at(-2).context, { question: "Q", results: withLedgers(results) });
-    assert.deepEqual(h.calls.at(-1).context, { question: "Q", results, judgment: judgmentFor() });
+    assert.deepEqual(h.calls.at(-3).context, { question: "Q", results: withLedgers(results) });
+    assert.deepEqual(h.calls.at(-2).context, { question: "Q", results, judgment: judgmentFor() });
+    assert.deepEqual(h.calls.at(-1).context, {
+        question: "Q", results, judgment: judgmentFor(), synchronized: "Synchronize result",
+    });
 });
 
 test("omitted iterations default to three reviews per branch", async () => {
     const h = harness({ question: "Q", models });
     assert.equal(await h.run(), "Synthesize result");
-    assert.equal(h.calls.length, 20);
+    assert.equal(h.calls.length, 21);
     assert.ok(!battlePlan.meta.argsSchema.required.includes("iterations"));
     for (const branch of [1, 2, 3]) {
         assert.ok(h.calls.some(({ label }) => label === `Review ${branch}:3`));
         assert.ok(!h.calls.some(({ label }) => label === `Plan ${branch}:4`));
     }
-    assert.deepEqual(h.calls.at(-2).context.results, withLedgers([1, 2, 3].map((branch) => ({
+    assert.deepEqual(h.calls.at(-3).context.results, withLedgers([1, 2, 3].map((branch) => ({
         branch,
         plan: `Plan ${branch}:3 result`,
         review: reviewFor(`Review ${branch}:3`),
@@ -206,9 +274,9 @@ test("an explicit single round forwards unresolved findings without an unreviewe
     const h = harness({ question: "Q", iterations: 1, models }, (call) =>
         call.label === "Review 1:1" ? JSON.stringify({ findings: [] }) : resultFor(call));
     assert.equal(await h.run(), "Synthesize result");
-    assert.equal(h.calls.length, 8);
+    assert.equal(h.calls.length, 9);
     assert.ok(!h.calls.some(({ label }) => label.endsWith(":2")));
-    assert.deepEqual(h.calls.at(-2).context.results, withLedgers([1, 2, 3].map((branch) => ({
+    assert.deepEqual(h.calls.at(-3).context.results, withLedgers([1, 2, 3].map((branch) => ({
         branch,
         plan: `Plan ${branch}:1 result`,
         review: branch === 1 ? { findings: [] } : reviewFor(`Review ${branch}:1`),
@@ -224,9 +292,9 @@ test("branches stop at different rounds and preserve their latest reviewed plans
         return resultFor(call);
     });
     await h.run();
-    assert.equal(h.calls.length, 14);
+    assert.equal(h.calls.length, 15);
     assert.ok(!h.calls.some(({ label }) => label === "Plan 1:2" || label === "Plan 2:3"));
-    assert.deepEqual(h.calls.at(-2).context.results, withLedgers([
+    assert.deepEqual(h.calls.at(-3).context.results, withLedgers([
         { branch: 1, plan: "Plan 1:1 result", review: { findings: [] }, stopReason: "approved" },
         { branch: 2, plan: "Plan 2:2 result", review: { findings: [] }, stopReason: "approved" },
         { branch: 3, plan: "Plan 3:3 result", review: reviewFor("Review 3:3"), stopReason: "iteration_limit" },
@@ -249,7 +317,8 @@ test("branches run concurrently and advance without waiting for another branch's
     const index = (label) => h.calls.findIndex((call) => call.label === label);
     assert.ok(index("Review 3:2") < index("Review 1:1"));
     assert.ok(index("Judge") > index("Review 1:2"));
-    assert.ok(index("Synthesize") > index("Judge"));
+    assert.ok(index("Synchronize") > index("Judge"));
+    assert.ok(index("Synthesize") > index("Synchronize"));
 });
 
 test("invalid inputs fail before spawning agents", async () => {
@@ -352,6 +421,15 @@ test("a failed judgment blocks synthesis", async () => {
     assert.ok(!h.calls.some(({ stage }) => stage === "Synthesize"));
 });
 
+test("a failed or empty synchronization blocks synthesis", async () => {
+    for (const response of [null, "", " \n ", {}]) {
+        const h = harness({ question: "Q", iterations: 1, models }, (call) =>
+            call.label === "Synchronize" ? response : resultFor(call));
+        await assert.rejects(h.run, /Synchronize (failed|returned an empty or invalid plan)/);
+        assert.ok(!h.calls.some(({ stage }) => stage === "Synthesize"));
+    }
+});
+
 test("a failed synthesis is not reported as success", async () => {
     const h = harness({ question: "Q", iterations: 1, models }, (call) =>
         call.label === "Synthesize" ? null : resultFor(call));
@@ -388,14 +466,15 @@ test("branch ledgers accumulate sourced finding updates and stay out of review a
             assert.match(plan.instruction, /Keep ledger entries and history out of the Markdown plan/);
         }
     }
-    for (const call of h.calls.filter(({ stage }) => stage === "Review" || stage === "Synthesize")) {
+    for (const call of h.calls.filter(({ stage }) => ["Review", "Synchronize", "Synthesize"].includes(stage))) {
         assert.doesNotMatch(JSON.stringify(call.context), /ledger|PRIVATE_/i);
     }
     assert.match(judge.instruction, /checking claims against available repository code and documentation/);
     assert.match(judge.instruction, /not raw ledger entries, IDs, or history/);
-    const synthesis = h.calls.at(-1);
-    assert.match(synthesis.instruction, /Follow Judge's decision/);
-    assert.match(synthesis.instruction, /contradiction you cannot reconcile/);
+    const synchronize = h.calls.at(-2);
+    assert.match(synchronize.instruction, /Follow Judge's decision/);
+    assert.match(synchronize.instruction, /contradiction you cannot reconcile/);
+    assert.match(h.calls.at(-1).instruction, /do not choose the winner again/);
 });
 
 test("a round without finding updates does not drop earlier ledger entries", async () => {
@@ -406,13 +485,17 @@ test("a round without finding updates does not drop earlier ledger entries", asy
     const h = harness({ question: "Q", iterations: 2, models }, (call) =>
         call.label === "Plan 1:1" ? planResult("Plan 1:1 result", [finding]) : resultFor(call));
     await h.run();
-    assert.deepEqual(h.calls.at(-2).context.results[0].ledger, [
+    assert.deepEqual(h.calls.at(-3).context.results[0].ledger, [
         { iteration: 1, findings: [finding] }, { iteration: 2, findings: [] },
     ]);
 });
 
 test("each winner forwards all three complete plans and selected or rejected additions", async () => {
-    const planFor = (branch) => `## Summary\nPlan ${branch}\n\n## Test Cases\nFull case ${branch}`;
+    const planFor = (branch) => [
+        "", "## Summary", `Plan ${branch}  `, "", "```diff",
+        "- old", `+ branch ${branch}`, "```", "", "## Evidence",
+        "`C:\\repo\\file.mjs:4`", "", "## Test Cases", `Full case ${branch}`, "",
+    ].join("\r\n");
     for (const winner of [1, 2, 3]) {
         const decision = judgmentFor(winner);
         decision.takeFromOthers[1].additions = [];
@@ -423,11 +506,15 @@ test("each winner forwards all three complete plans and selected or rejected add
             return resultFor(call);
         });
         await h.run();
-        const judge = h.calls.at(-2);
+        const judge = h.calls.at(-3);
+        const synchronize = h.calls.at(-2);
         const synthesis = h.calls.at(-1);
+        assert.deepEqual(synchronize.context.judgment, decision);
         assert.deepEqual(synthesis.context.judgment, decision);
         for (const branch of [1, 2, 3]) {
-            for (const call of [judge, synthesis]) {
+            const review = h.calls.find(({ label }) => label === `Review ${branch}:1`);
+            assert.equal(review.context.plan, planFor(branch));
+            for (const call of [judge, synchronize, synthesis]) {
                 assert.equal(call.context.results[branch - 1].branch, branch);
                 assert.equal(call.context.results[branch - 1].plan, planFor(branch));
             }
@@ -456,7 +543,7 @@ test("only defined fields from agent JSON become downstream inputs", async () =>
         return resultFor(call);
     });
     await h.run();
-    assert.doesNotMatch(JSON.stringify(h.calls.at(-2).context), /DROP_ME/);
+    assert.doesNotMatch(JSON.stringify(h.calls.at(-3).context), /DROP_ME/);
     assert.doesNotMatch(JSON.stringify(h.calls.at(-1).context), /DROP_ME|ledger/);
     assert.deepEqual(h.calls.at(-1).context.judgment, decision);
 });
@@ -512,10 +599,29 @@ test("invalid judgments block Synthesize", async () => {
     }
 });
 
-test("empty or non-text synthesis is not reported as a final plan", async () => {
-    for (const response of ["", " \n ", undefined, {}, []]) {
+test("invalid synthesis results are not reported as a final plan", async () => {
+    for (const response of [
+        "", " \n ", undefined, {}, [], "A generic fallback plan",
+        '```json\n{"status":"ready","plan":"A plan","reason":""}\n```',
+        ...[
+            null, [], {}, { status: "ready", plan: "A plan" },
+            { status: "ready", plan: "A plan", reason: null },
+            { status: "invalid", plan: "A plan", reason: "" },
+            ...["", " \r\n ", null, 1].map((plan) => ({ status: "ready", plan, reason: "" })),
+            { status: "ready", plan: "A fallback plan", reason: "plan-change is unavailable" },
+            { status: "blocked", plan: "", reason: "" },
+        ].map((value) => JSON.stringify(value)),
+    ]) {
         const h = harness({ question: "Q", iterations: 1, models }, (call) =>
             call.stage === "Synthesize" ? response : resultFor(call));
-        await assert.rejects(h.run, /Synthesize returned an empty or invalid plan/);
+        await assert.rejects(h.run, /Synthesize.*(invalid|valid|blocked|unavailable)/);
     }
+});
+
+test("a missing plan-change skill during synthesis preserves the blocker instead of returning a plan", async () => {
+    const h = harness({ question: "Q", iterations: 1, models }, (call) =>
+        call.stage === "Synthesize"
+            ? JSON.stringify({ status: "blocked", plan: "", reason: "plan-change cannot be loaded" })
+            : resultFor(call));
+    await assert.rejects(h.run, /Synthesize blocked: plan-change cannot be loaded/);
 });

@@ -12,11 +12,13 @@ const planResultInstruction =
     "Keep ledger entries and history out of the Markdown plan; include the evidence needed to " +
     "understand the plan itself. Do not write ledger files or implement changes.";
 
-const firstPlanInstruction =
+const planChangeInstruction =
     "Use the installed plan-change skill by invoking it with the skill tool before planning. " +
+    "Follow its full template, tone, evidence requirements, scope rules, and merge-risk guidance. " +
     "If the skill is unavailable or cannot be loaded, return " +
-    "status blocked, an empty plan, and a clear reason; do not substitute a generic plan. If the " +
-    "skill cannot be loaded, findings may be empty. " + planResultInstruction;
+    "status blocked, an empty plan, and a clear reason; do not substitute a generic plan. ";
+
+const firstPlanInstruction = planChangeInstruction + planResultInstruction;
 
 const reviewInstruction =
     "Review the complete plan against the original question: check that it satisfies every " +
@@ -48,21 +50,37 @@ const judgeInstruction =
     "Return only the decision and supporting rationale, not raw ledger entries, IDs, or history. " +
     "Do not use Markdown fences, write files, or implement changes.";
 
-const synthesizeInstruction =
-    "Produce the complete final Markdown plan using the original question, all three complete " +
-    "plans, reviews, and judgment. Use judgment.winner as the base and apply the additions selected " +
-    "in judgment.takeFromOthers from the referenced plan sections. Follow Judge's decision; do not " +
-    "choose the winner again. Reconcile overlapping selected additions and explicitly report any " +
-    "contradiction you cannot reconcile without changing that decision. " +
+const synchronizeInstruction =
+    "Combine the plans into one complete Markdown draft using the original question, all three " +
+    "complete plans, reviews, and judgment. Use judgment.winner as the base and apply the additions " +
+    "selected in judgment.takeFromOthers from the referenced plan sections. Follow Judge's decision; " +
+    "do not choose the winner again. Reconcile overlapping selected additions and explicitly report " +
+    "any contradiction you cannot reconcile without changing that decision. " +
     "Explicitly report any remaining review findings by branch, including those from branches " +
     "that reached iteration_limit. Do not describe a plan with unresolved findings as approved. " +
-    "Do not implement changes.";
+    "Return only the complete Markdown draft, not a summary or file path. " +
+    "Do not write files or implement changes.";
+
+const synthesizeInstruction = planChangeInstruction +
+    "Compose the complete final Markdown plan from the original question, all three complete " +
+    "plans, reviews, judgment, and the synchronized draft. Keep the content of the synchronized " +
+    "draft, which already applies Judge's decision; do not choose the winner again or add changes " +
+    "Judge did not select. Use the other inputs only to resolve gaps or ambiguities in the draft. " +
+    "Keep any contradictions the draft reports and explicitly report any remaining review findings " +
+    "by branch, including those from branches that reached iteration_limit. Do not describe a plan " +
+    "with unresolved findings as approved. " +
+    "Keep the skill's template headings and markers; write the prose in the original question's language. " +
+    "Return exactly one JSON object with string fields status, plan, and reason, without Markdown " +
+    "fences or surrounding prose. On success, return status ready, the complete final Markdown plan " +
+    "in plan (not a summary or file path), and an empty reason. If the skill cannot be loaded or " +
+    "the plan cannot be completed, return status blocked with an empty plan and a clear reason. " +
+    "Do not write files or implement changes.";
 
 export const battlePlan = {
     meta: {
         name: "battle-plan",
-        description: "Three parallel plan/review loops, then judge and synthesize the plans.",
-        phases: [{ title: "Plan / Review" }, { title: "Judge" }, { title: "Synthesize" }],
+        description: "Three parallel plan/review loops, then judge, synchronize, and synthesize the plans.",
+        phases: [{ title: "Plan / Review" }, { title: "Judge" }, { title: "Synchronize" }, { title: "Synthesize" }],
         limits: { maxAiCredits: 160 },
         argsSchema: {
             type: "object",
@@ -226,12 +244,30 @@ export const battlePlan = {
             })),
         };
 
-        ctx.phase("Synthesize");
+        ctx.phase("Synchronize");
         const plans = results.map(({ branch, plan, review, stopReason }) => ({
             branch, plan, review, stopReason,
         }));
-        const synthesis = await agent(`Synthesize\n${synthesizeInstruction}`, { question, results: plans, judgment }, { label: "Synthesize", model: models.plan[0] });
-        if (!isName(synthesis)) throw new Error("Synthesize returned an empty or invalid plan.");
-        return synthesis;
+        const synchronized = await agent(`Synchronize\n${synchronizeInstruction}`, { question, results: plans, judgment }, { label: "Synchronize", model: models.plan[0] });
+        if (!isName(synchronized)) throw new Error("Synchronize returned an empty or invalid plan.");
+
+        ctx.phase("Synthesize");
+        const synthesisResponse = await agent(`Synthesize\n${synthesizeInstruction}`, { question, results: plans, judgment, synchronized }, { label: "Synthesize", model: models.plan[0] });
+        const synthesis = parseObject(synthesisResponse, "Synthesize", "plan-change result");
+        if (typeof synthesis.status !== "string" || typeof synthesis.plan !== "string"
+            || typeof synthesis.reason !== "string") {
+            throw new Error("Synthesize returned an invalid plan-change result.");
+        }
+        if (synthesis.status === "blocked") {
+            const reason = isName(synthesis.reason) ? synthesis.reason : "plan-change was blocked without a reason.";
+            throw new Error(`Synthesize blocked: ${reason}`);
+        }
+        if (synthesis.status !== "ready" || !isName(synthesis.plan)) {
+            throw new Error("Synthesize returned an empty or invalid plan.");
+        }
+        if (isName(synthesis.reason)) {
+            throw new Error(`Synthesize reported a problem: ${synthesis.reason}`);
+        }
+        return synthesis.plan;
     },
 };
