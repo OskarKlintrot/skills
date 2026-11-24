@@ -40,6 +40,10 @@ Plugin installation needs no global directory mappings. For local development, t
 
 `skills\csharp-15\SKILL.md` provides guidance for C# 15 and .NET 11, including collection expression arguments, union types, closed class hierarchies, extension indexers, labeled jumps, and static interface members. It also covers the preview memory-safety model, which the skill says to use only when the user opts in. The skill is discoverable for C# 15 features, targets, and related compiler diagnostics; its full instructions load when activated.
 
+## Plan change
+
+`skills\plan-change\SKILL.md` guides concise plans for proposed changes, including verified assumptions, visual summaries, evidence, test cases, out-of-scope items and merge risks. Invoke it with `/oskar-tools:plan-change`. Unlike the `plan` command, it does not prescribe a task breakdown or a planning file location.
+
 ## Engineering workflow commands
 
 `com.github.copilot\commands\*.md` contains nine Copilot CLI command adapters based on the `.claude\commands` files shipped with [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills), version `0.6.14`, plus a standalone `addy-lifecycle` dynamic workflow with a skill and command as launch adapters. `com.github.copilot\commands\LICENSE` retains the unchanged upstream MIT license and copyright notice, with a separate attribution clarification. That notice identifies the upstream material; the Copilot adaptations and additional workflow changes belong to this repository's history and are not attributed to or endorsed by Addy Osmani.
