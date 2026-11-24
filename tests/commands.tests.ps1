@@ -18,7 +18,7 @@ $skills = [ordered]@{
 }
 $failures = 0
 $descriptions = @{}
-$packagedSkills = @('addy-lifecycle', 'csharp-15', 'exhaustive-task', 'git-conventions', 'readme-conventions')
+$packagedSkills = @('addy-lifecycle', 'battle-plan', 'csharp-15', 'exhaustive-task', 'git-conventions', 'readme-conventions')
 $packagedAgents = @('code-reviewer', 'security-auditor', 'test-engineer', 'web-performance-auditor')
 
 function Assert-Check([string]$Name, [bool]$Condition) {
@@ -202,6 +202,9 @@ try {
     Assert-Check 'Installed plugin discovers the exhaustive-task skill' (
         $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('exhaustive-task')
     )
+    Assert-Check 'Installed plugin discovers the battle-plan skill' (
+        $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('battle-plan')
+    )
     Assert-Check 'Installed plugin discovers the csharp-15 skill' (
         $LASTEXITCODE -eq 0 -and ($installedSkills -join "`n").Contains('csharp-15')
     )
@@ -214,6 +217,11 @@ try {
     Assert-Check 'Installed exhaustive-task workflow loads and enforces its argument schema without agents' (
         $LASTEXITCODE -eq 2 -and
         ($exhaustiveOutput -join "`n").Contains('Invalid arguments for dynamic workflow "exhaustive-task".')
+    )
+    $compareOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run battle-plan --args '{"question":"Missing iterations"}' 2>&1
+    Assert-Check 'Installed battle-plan workflow loads and enforces its argument schema without agents' (
+        $LASTEXITCODE -eq 2 -and
+        ($compareOutput -join "`n").Contains('Invalid arguments for dynamic workflow "battle-plan".')
     )
 
     # PowerShell resolves npm launchers as well as native CLI installations.

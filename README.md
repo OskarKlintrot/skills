@@ -2,7 +2,7 @@
 
 `oskar-tools` is a personal [Agent Plugins 1.0](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-creating) plugin, distributed through the `oskar-personal` marketplace in this repository.
 
-The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, [engineering workflow commands](#engineering-workflow-commands) that mostly use the separately installed Addy agent-skills plugin, four [specialist personas](#agents), and [dynamic workflows](#dynamic-workflows) for a standalone Addy lifecycle, batched exhaustive tasks and a no-agent `hello-world` example. These components are available through plugin installation without development mappings. It contains no standalone instructions or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
+The plugin ships a [git conventions skill and validation hook](#git-conventions) for commit messages, PR titles, and branch names, a [README conventions skill](#readme-conventions) for maintained documentation, [engineering workflow commands](#engineering-workflow-commands) that mostly use the separately installed Addy agent-skills plugin, four [specialist personas](#agents), and [dynamic workflows](#dynamic-workflows) for a standalone Addy lifecycle, batched exhaustive tasks, parallel plan/review loops and a no-agent `hello-world` example. These components are available through plugin installation without development mappings. It contains no standalone instructions or MCP servers yet. A `.gitkeep` file only keeps an otherwise empty directory in Git; it is not a Copilot component.
 
 ## Git conventions
 
@@ -212,6 +212,9 @@ com.github.copilot\
     exhaustive-task\
       extension.mjs
       workflow.mjs
+    battle-plan\
+      extension.mjs
+      workflow.mjs
   hooks\
     hooks.json
     scripts\
@@ -260,6 +263,34 @@ copilot --experimental workflow run hello-world --args '{"name":"Oskar"}'
 ```
 
 It returns `{"greeting":"Hello, Oskar!","source":"oskar-tools plugin"}`. In an interactive session, enable experimental features and ask Copilot to run the `hello-world` dynamic workflow.
+
+#### Battle plan
+
+`battle-plan` is a minimal orchestration shell: the question goes to three independent, parallel plan/review loops, then a final Judge agent compares their last plans and reviews and picks the most suitable plan. `question` (non-empty text), `iterations` (a positive integer per loop) and `models` are required. Each new plan receives its previous plan and review; each review receives the current plan. Loops advance independently.
+
+`models` names `judge` and exactly three `plan` models, one per branch. Each branch's Review uses the previous branch's Plan model, so no branch reviews its own plans:
+
+| Branch | Plan | Review |
+|---|---|---|
+| 1 | `plan[0]` | `plan[2]` |
+| 2 | `plan[1]` | `plan[0]` |
+| 3 | `plan[2]` | `plan[1]` |
+
+The skill picks the newest available model in each family: GPT Luna, MAI Code Flash and Claude Haiku for the plans; GPT Sol for Judge. Until the skill is updated, it still supplies a Question model, which the workflow ignores. It asks for a replacement when a family is unavailable.
+
+The skill sets a workflow-wide `maxAiCredits` limit of `100 + 60 * iterations`: 160 credits for one iteration, 220 for two. The limit is soft and post-paid, so in-flight or parallel work can settle above it; it does not limit individual agents. The runtime stops a capped run if credit accounting fails. The workflow defaults to 160 credits when no override is supplied. Direct CLI runs use that default for any iteration count; use the skill or the SDK's workflow limit override for an iteration-adjusted limit.
+
+The only workflow-added prompt instructions are `Plan`, `Review` and `Judge`, followed by JSON context. There are no personas, skill dependencies, approval gates or convergence-based early stopping. Existing runtime and repository instructions still apply; the workflow adds no read-only enforcement or worktree isolation. Put task-specific instructions in `question`. Each step uses a fresh agent with a unique branch/iteration label; runtime journaling reuses completed calls on resume. A run uses `6 * iterations + 1` agent calls when successful, and a failed loop blocks judging. The workflow returns the Judge's text.
+
+Start with `/oskar-tools:battle-plan <question>` or invoke the installed `battle-plan` skill. `skills\battle-plan\SKILL.md` launches the workflow with the models and credit limit, asking for the iteration count when the request omits it. The workflow can also be started directly with the default limit:
+
+```powershell
+copilot --experimental workflow run battle-plan --args '{"question":"Compare approaches to this problem. Plan and review only; do not edit files.","iterations":1,"models":{"question":"claude-sonnet-5.5","plan":["gpt-6-luna","mai-code-1.1-flash","claude-haiku-5.5"],"judge":"gpt-6.1-sol"}}'
+```
+
+```powershell
+node --test tests\battle-plan.tests.mjs
+```
 
 #### Exhaustive tasks
 
