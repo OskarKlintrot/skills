@@ -266,9 +266,9 @@ It returns `{"greeting":"Hello, Oskar!","source":"oskar-tools plugin"}`. In an i
 
 #### Battle plan
 
-`battle-plan` is a minimal orchestration shell: the question goes to three independent, parallel plan/review loops, then a final Judge agent compares their last plans and reviews and picks the most suitable plan. `question` (non-empty text), `iterations` (a positive integer per loop) and `models` are required. Each new plan receives its previous plan and review; each review receives the current plan. Loops advance independently.
+`battle-plan` is a minimal orchestration shell: the question goes to three independent, parallel plan/review loops, then a Judge agent compares their last plans and reviews and picks the most suitable plan. A final Synthesize agent receives the question, last plans and reviews, and Judge's result to produce the workflow result. `question` (non-empty text), `iterations` (a positive integer per loop) and `models` are required. Each new plan receives its previous plan and review; each review receives the current plan. Loops advance independently.
 
-`models` names `judge` and exactly three `plan` models, one per branch. Each branch's Review uses the previous branch's Plan model, so no branch reviews its own plans:
+`models` names `judge` and exactly three `plan` models, one per branch. Synthesize uses `plan[0]`, so direct callers should put their chosen GPT Luna model first. Each branch's Review uses the previous branch's Plan model, so no branch reviews its own plans:
 
 | Branch | Plan | Review |
 |---|---|---|
@@ -276,11 +276,11 @@ It returns `{"greeting":"Hello, Oskar!","source":"oskar-tools plugin"}`. In an i
 | 2 | `plan[1]` | `plan[0]` |
 | 3 | `plan[2]` | `plan[1]` |
 
-The skill picks the newest available model in each family: GPT Luna, MAI Code Flash and Claude Haiku for the plans; GPT Sol for Judge. Until the skill is updated, it still supplies a Question model, which the workflow ignores. It asks for a replacement when a family is unavailable.
+The skill picks the newest available model in each family: GPT Luna, MAI Code Flash and Claude Haiku for the plans; GPT Sol for Judge; and GPT Luna again for Synthesize. The skill also supplies a Question model, which the workflow ignores. It asks for a replacement when a family is unavailable.
 
 The skill sets a workflow-wide `maxAiCredits` limit of `100 + 60 * iterations`: 160 credits for one iteration, 220 for two. The limit is soft and post-paid, so in-flight or parallel work can settle above it; it does not limit individual agents. The runtime stops a capped run if credit accounting fails. The workflow defaults to 160 credits when no override is supplied. Direct CLI runs use that default for any iteration count; use the skill or the SDK's workflow limit override for an iteration-adjusted limit.
 
-The only workflow-added prompt instructions are `Plan`, `Review` and `Judge`, followed by JSON context. There are no personas, skill dependencies, approval gates or convergence-based early stopping. Existing runtime and repository instructions still apply; the workflow adds no read-only enforcement or worktree isolation. Put task-specific instructions in `question`. Each step uses a fresh agent with a unique branch/iteration label; runtime journaling reuses completed calls on resume. A run uses `6 * iterations + 1` agent calls when successful, and a failed loop blocks judging. The workflow returns the Judge's text.
+The only workflow-added prompt instructions are `Plan`, `Review`, `Judge` and `Synthesize`, followed by JSON context. There are no personas, skill dependencies, approval gates or convergence-based early stopping. Existing runtime and repository instructions still apply; the workflow adds no read-only enforcement or worktree isolation. Put task-specific instructions in `question`. Each step uses a fresh agent with a unique branch/iteration label; runtime journaling reuses completed calls on resume. A run uses `6 * iterations + 2` agent calls when successful; a failed loop blocks judging, and a failed Judge blocks synthesis. The workflow returns the Synthesize agent's text.
 
 Start with `/oskar-tools:battle-plan <question>` or invoke the installed `battle-plan` skill. `skills\battle-plan\SKILL.md` launches the workflow with the models and credit limit, asking for the iteration count when the request omits it. The workflow can also be started directly with the default limit:
 

@@ -29,12 +29,12 @@ function harness(args, handler = ({ label }) => `${label} result`) {
     return { calls, phases, run: () => battlePlan.run(ctx) };
 }
 
-test("three independent loops pass reviews into the next plan and judge only final results", async () => {
+test("three independent loops feed final results into judging and synthesis", async () => {
     assert.equal(battlePlan.meta.limits.maxAiCredits, 160);
     const h = harness({ question: "A question", iterations: 2, models });
-    assert.equal(await h.run(), "Judge result");
-    assert.equal(h.calls.length, 13);
-    assert.deepEqual(h.phases, ["Plan / Review", "Judge"]);
+    assert.equal(await h.run(), "Synthesize result");
+    assert.equal(h.calls.length, 14);
+    assert.deepEqual(h.phases, ["Plan / Review", "Judge", "Synthesize"]);
     assert.equal(new Set(h.calls.map(({ label }) => label)).size, h.calls.length);
     for (const [index, [model, reviewModel]] of [
         ["p1", "p3"],
@@ -60,14 +60,16 @@ test("three independent loops pass reviews into the next plan and judge only fin
             question: "A question", plan: `Plan ${branch}:2 result`,
         });
     }
-    assert.deepEqual(h.calls.at(-1), {
+    const results = [1, 2, 3].map((branch) => ({
+        plan: `Plan ${branch}:2 result`, review: `Review ${branch}:2 result`,
+    }));
+    assert.deepEqual(h.calls.at(-2), {
         stage: "Judge", label: "Judge", model: "j-model",
-        context: {
-            question: "A question",
-            results: [1, 2, 3].map((branch) => ({
-                plan: `Plan ${branch}:2 result`, review: `Review ${branch}:2 result`,
-            })),
-        },
+        context: { question: "A question", results },
+    });
+    assert.deepEqual(h.calls.at(-1), {
+        stage: "Synthesize", label: "Synthesize", model: "p1",
+        context: { question: "A question", results, judgment: "Judge result" },
     });
 });
 
@@ -81,11 +83,12 @@ test("branches run concurrently and advance without waiting for another branch's
         if (label === "Review 3:2") release();
         return `${label} result`;
     });
-    assert.equal(await h.run(), "Judge result");
+    assert.equal(await h.run(), "Synthesize result");
     assert.deepEqual(started, ["Plan 1:1", "Plan 2:1", "Plan 3:1"]);
     const index = (label) => h.calls.findIndex((call) => call.label === label);
     assert.ok(index("Review 3:2") < index("Review 1:1"));
     assert.ok(index("Judge") > index("Review 1:2"));
+    assert.ok(index("Synthesize") > index("Judge"));
 });
 
 test("invalid inputs fail before spawning agents", async () => {
@@ -112,14 +115,22 @@ test("a failed plan or review blocks judging", async () => {
             label === failed ? null : `${label} result`);
         await assert.rejects(h.run, /loop failed/);
         assert.ok(!h.calls.some(({ stage }) => stage === "Judge"));
+        assert.ok(!h.calls.some(({ stage }) => stage === "Synthesize"));
         if (failed.startsWith("Plan")) {
             assert.ok(!h.calls.some(({ label }) => label === "Review 2:1"));
         }
     }
 });
 
-test("a failed judgement is not reported as success", async () => {
+test("a failed judgment blocks synthesis", async () => {
     const h = harness({ question: "Q", iterations: 1, models }, ({ label }) =>
         label === "Judge" ? null : `${label} result`);
     await assert.rejects(h.run, /Judge failed/);
+    assert.ok(!h.calls.some(({ stage }) => stage === "Synthesize"));
+});
+
+test("a failed synthesis is not reported as success", async () => {
+    const h = harness({ question: "Q", iterations: 1, models }, ({ label }) =>
+        label === "Synthesize" ? null : `${label} result`);
+    await assert.rejects(h.run, /Synthesize failed/);
 });

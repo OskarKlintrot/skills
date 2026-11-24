@@ -1,8 +1,8 @@
 export const battlePlan = {
     meta: {
         name: "battle-plan",
-        description: "Three parallel plan/review loops, then judge which plan is best.",
-        phases: [{ title: "Plan / Review" }, { title: "Judge" }],
+        description: "Three parallel plan/review loops, then judge and synthesize the plans.",
+        phases: [{ title: "Plan / Review" }, { title: "Judge" }, { title: "Synthesize" }],
         limits: { maxAiCredits: 160 },
         argsSchema: {
             type: "object",
@@ -60,6 +60,9 @@ export const battlePlan = {
         }
 
         ctx.phase("Judge");
-        return agent("Judge", { question, results }, { label: "Judge", model: models.judge });
+        const judgment = await agent("Judge", { question, results }, { label: "Judge", model: models.judge });
+
+        ctx.phase("Synthesize");
+        return agent("Synthesize", { question, results, judgment }, { label: "Synthesize", model: models.plan[0] });
     },
 };

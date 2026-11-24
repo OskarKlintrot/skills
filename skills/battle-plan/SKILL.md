@@ -1,6 +1,6 @@
 ---
 name: battle-plan
-description: Start the battle-plan dynamic workflow, which runs three parallel plan/review loops and judges which plan is most suitable.
+description: Start the battle-plan dynamic workflow, which runs three parallel plan/review loops, judges the plans, and synthesizes the result.
 ---
 
 # Battle plan
@@ -25,6 +25,9 @@ Call `run_dynamic_workflow` with `name` set to `battle-plan` and these `args`:
   }
 }
 ```
+
+The workflow also uses `models.plan[0]`, the newest available GPT Luna model,
+for Synthesize after Judge.
 
 Set the call's separate, top-level `limits.maxAiCredits` to the number
 `100 + 60 * iterations`: 160 for one iteration, 220 for two, and so on. This
