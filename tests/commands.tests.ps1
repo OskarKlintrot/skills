@@ -225,7 +225,7 @@ try {
         $LASTEXITCODE -eq 2 -and
         ($exhaustiveOutput -join "`n").Contains('Invalid arguments for dynamic workflow "exhaustive-task".')
     )
-    $compareOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run battle-plan --args '{"question":"Missing iterations"}' 2>&1
+    $compareOutput = & copilot --experimental --disable-builtin-mcps --no-custom-instructions workflow run battle-plan --args '{"question":"Missing models"}' 2>&1
     Assert-Check 'Installed battle-plan workflow loads and enforces its argument schema without agents' (
         $LASTEXITCODE -eq 2 -and
         ($compareOutput -join "`n").Contains('Invalid arguments for dynamic workflow "battle-plan".')

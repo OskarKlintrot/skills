@@ -270,26 +270,16 @@ It returns `{"greeting":"Hello, Oskar!","source":"oskar-tools plugin"}`. In an i
 
 #### Battle plan
 
-`battle-plan` is a minimal orchestration shell: the question goes to three independent, parallel plan/review loops, then a Judge agent compares their last plans and reviews and picks the most suitable plan. A final Synthesize agent receives the question, last plans and reviews, and Judge's result to produce the workflow result. `question` (non-empty text), `iterations` (a positive integer per loop) and `models` are required. Each branch uses the installed `plan-change` skill for its first plan. Each new plan receives its previous plan and review; each review receives the current plan. Loops advance independently.
+`battle-plan` creates and compares three plans in parallel. Each plan is reviewed against the request for missing requirements, gaps, errors and ambiguities. Feedback is used to revise the plan until the review finds no problems or the iteration limit is reached. The result reports any remaining findings. The workflow requires the installed `plan-change` skill.
 
-`models` names `judge` and exactly three `plan` models, one per branch. Synthesize uses `plan[0]`, so direct callers should put their chosen GPT Luna model first. Each branch's Review uses the previous branch's Plan model, so no branch reviews its own plans:
+Start with `/oskar-tools:battle-plan <question>` or invoke the installed `battle-plan` skill. It runs up to three reviews per plan by default; specify another positive number to change the limit. The skill selects available GPT Luna, MAI Code Flash, Claude Haiku, GPT Sol and Claude Sonnet models and asks for a replacement if a family is unavailable.
 
-| Branch | Plan | Review |
-|---|---|---|
-| 1 | `plan[0]` | `plan[2]` |
-| 2 | `plan[1]` | `plan[0]` |
-| 3 | `plan[2]` | `plan[1]` |
+The skill's workflow-wide `maxAiCredits` limit is `100 + 60 * iterations`, or 280 credits by default. The limit is soft and post-paid, so parallel work can settle above it. Direct workflow calls use a 160-credit limit regardless of iteration count unless overridden through the SDK.
 
-The skill picks the newest available model in each family: GPT Luna, MAI Code Flash and Claude Haiku for the plans; GPT Sol for Judge; and GPT Luna again for Synthesize. The skill also supplies a Question model, which the workflow ignores. It asks for a replacement when a family is unavailable.
-
-The skill sets a workflow-wide `maxAiCredits` limit of `100 + 60 * iterations`: 160 credits for one iteration, 220 for two. The limit is soft and post-paid, so in-flight or parallel work can settle above it; it does not limit individual agents. The runtime stops a capped run if credit accounting fails. The workflow defaults to 160 credits when no override is supplied. Direct CLI runs use that default for any iteration count; use the skill or the SDK's workflow limit override for an iteration-adjusted limit.
-
-There are no personas, approval gates or convergence-based early stopping. Existing runtime and repository instructions still apply; the workflow adds no read-only enforcement or worktree isolation. Put task-specific instructions in `question`. Each step uses a fresh agent with a unique branch/iteration label; runtime journaling reuses completed calls on resume. A run uses `6 * iterations + 2` agent calls when successful; a failed loop blocks judging, and a failed Judge blocks synthesis. The workflow returns the Synthesize agent's text.
-
-Start with `/oskar-tools:battle-plan <question>` or invoke the installed `battle-plan` skill. `skills\battle-plan\SKILL.md` launches the workflow with the models and credit limit, asking for the iteration count when the request omits it. The workflow can also be started directly with the default limit:
+The workflow asks agents to plan, not implement, but does not enforce read-only access or provide worktree isolation. Include task-specific boundaries in the request. To start the workflow directly, provide a non-empty `question` and `models` with three `plan` models and one `judge` model. The optional `iterations` is a positive integer and defaults to 3.
 
 ```powershell
-copilot --experimental workflow run battle-plan --args '{"question":"Compare approaches to this problem. Plan and review only; do not edit files.","iterations":1,"models":{"question":"claude-sonnet-5.5","plan":["gpt-6-luna","mai-code-1.1-flash","claude-haiku-5.5"],"judge":"gpt-6.1-sol"}}'
+copilot --experimental workflow run battle-plan --args '{"question":"Compare approaches to this problem. Plan and review only; do not edit files.","iterations":1,"models":{"plan":["gpt-6-luna","mai-code-1.1-flash","claude-haiku-5.5"],"judge":"gpt-6.1-sol"}}'
 ```
 
 ```powershell

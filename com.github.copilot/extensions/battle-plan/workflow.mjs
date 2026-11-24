@@ -6,6 +6,30 @@ const firstPlanInstruction =
     "plan cannot be completed, return status blocked with a reason. On success, return status ready, " +
     "the complete Markdown plan in plan (not a summary or file path), and an empty reason.";
 
+const reviewInstruction =
+    "Review the complete plan against the original question: check that it satisfies every " +
+    "requirement without adding unrequested scope. Look for gaps, errors, contradictions, " +
+    "ambiguities, unsupported assumptions, and missing validation. Report concrete problems " +
+    "and what needs to be corrected; do not rewrite the plan or implement changes. " +
+    'Return exactly one JSON object with a findings field containing an array of non-empty strings, ' +
+    'without Markdown fences or surrounding prose. Return {"findings":[]} only if no problems remain.';
+
+const revisePlanInstruction =
+    "Revise the complete plan to address the review findings while preserving the original " +
+    "question's requirements and scope. Return the complete updated Markdown plan, not a summary, " +
+    "diff, or file path. Do not implement changes.";
+
+const judgeInstruction =
+    "Compare the plans against the original question and choose the most suitable plan. " +
+    "Weigh the remaining review findings and each branch's stopReason; a plan at iteration_limit " +
+    "still has unresolved findings and must not be described as approved.";
+
+const synthesizeInstruction =
+    "Produce the complete final plan using the original question, plans, reviews, and judgment. " +
+    "Explicitly report any remaining review findings by branch, including those from branches " +
+    "that reached iteration_limit. Do not describe a plan with unresolved findings as approved. " +
+    "Do not implement changes.";
+
 export const battlePlan = {
     meta: {
         name: "battle-plan",
@@ -27,11 +51,11 @@ export const battlePlan = {
                     required: ["plan", "judge"],
                 },
             },
-            required: ["question", "iterations", "models"],
+            required: ["question", "models"],
         },
     },
     run: async (ctx) => {
-        const { question, iterations, models } = ctx.args;
+        const { question, iterations = 3, models } = ctx.args;
         const isName = (value) => typeof value === "string" && value.trim() !== "";
         if (!isName(question)) {
             throw new Error("question must be a non-empty string.");
@@ -91,11 +115,33 @@ export const battlePlan = {
                     }
                     plan = result.plan;
                 } else {
-                    plan = await agent("Plan", context, options);
+                    plan = await agent(`Plan\n${revisePlanInstruction}`, context, options);
+                    if (!isName(plan)) {
+                        return { failure: `${options.label} returned an empty or invalid revised plan.` };
+                    }
                 }
-                review = await agent("Review", { question, plan }, { label: `Review ${branch}:${iteration}`, model: reviewModel });
+                const reviewOptions = { label: `Review ${branch}:${iteration}`, model: reviewModel };
+                const response = await ctx.agent(
+                    `Review\n${reviewInstruction}\n\n${JSON.stringify({ question, plan })}`,
+                    reviewOptions,
+                );
+                if (typeof response !== "string") {
+                    return { failure: `${reviewOptions.label} failed to return a valid review.` };
+                }
+                try {
+                    review = JSON.parse(response);
+                } catch {
+                    return { failure: `${reviewOptions.label} returned invalid JSON for its review.` };
+                }
+                if (review === null || typeof review !== "object" || Array.isArray(review)
+                    || !Array.isArray(review.findings) || !review.findings.every(isName)) {
+                    return { failure: `${reviewOptions.label} returned invalid review findings.` };
+                }
+                if (review.findings.length === 0) {
+                    return { plan, review, stopReason: "approved" };
+                }
             }
-            return { plan, review };
+            return { plan, review, stopReason: "iteration_limit" };
         }));
         const failedPlan = results.find((result) => result?.failure);
         if (failedPlan) {
@@ -106,9 +152,9 @@ export const battlePlan = {
         }
 
         ctx.phase("Judge");
-        const judgment = await agent("Judge", { question, results }, { label: "Judge", model: models.judge });
+        const judgment = await agent(`Judge\n${judgeInstruction}`, { question, results }, { label: "Judge", model: models.judge });
 
         ctx.phase("Synthesize");
-        return agent("Synthesize", { question, results, judgment }, { label: "Synthesize", model: models.plan[0] });
+        return agent(`Synthesize\n${synthesizeInstruction}`, { question, results, judgment }, { label: "Synthesize", model: models.plan[0] });
     },
 };
