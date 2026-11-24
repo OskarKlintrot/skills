@@ -26,13 +26,22 @@ Use the user's domain language from `GLOSSARY.md` if it exists in the workspace.
 
 ## Output
 
-Write the plan as a Markdown file, not as chat text.
+Choose the output from the caller's instructions and the active session mode:
 
-- Save it in the session's artifacts folder (the session's `files/` folder), not in the repository, unless the user asks for another location.
-- Name it `plan-<short-kebab-topic>.md`. If the file exists, update it when it is the same plan; otherwise pick a new name.
-- If an editor canvas is available, open the file in it.
-- In chat, reply with the absolute path and at most three lines on the key decisions. Do not repeat the plan.
-- If no artifacts folder or file tool exists (for example, when the caller expects the plan as a return value), return the full plan as text instead.
+1. **Workflow or subagent:** Return the complete Markdown plan as the result so the caller can pass it to the next step. If the caller requires structured output, put the complete plan in its designated field and follow its schema. A summary or file path alone is not the plan. Create a file only if requested by the caller.
+2. **Explicit output request:** If the user asks for a file, save it using the file rules below. If the user asks for text, return the complete Markdown plan.
+3. **Plan mode:** Use the session's native plan presentation and approval flow when available. Supply the complete plan through the mechanism provided by the runtime; otherwise return it as the final response. This skill does not switch session modes or require a separate artifact.
+4. **Other interactive sessions:** Save the plan using the file rules below.
+
+### File output
+
+- Use the user's path when supplied; otherwise save `plan-<short-kebab-topic>.md` in the session's artifacts folder (the session's `files/` folder), outside the repository.
+- Update an existing file only when it is the same plan; otherwise pick a new name.
+- Verify the file was saved, then open it in an editor canvas when available.
+- Reply with a link to the file and at most three lines on the key decisions, rather than repeating the plan.
+- If file output is unavailable or fails, report the limitation and return the complete plan as text.
+
+Producing or saving a plan does not approve its implementation.
 
 ## Template
 
