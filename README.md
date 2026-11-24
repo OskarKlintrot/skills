@@ -42,7 +42,7 @@ Plugin installation needs no global directory mappings. For local development, t
 
 ## Plan change
 
-`skills\plan-change\SKILL.md` guides concise plans for proposed changes, including verified assumptions, visual summaries, evidence, test cases, out-of-scope items and merge risks. Invoke it with `/oskar-tools:plan-change`. Unlike the `plan` command, it does not prescribe a task breakdown or a planning file location.
+`skills\plan-change\SKILL.md` guides concise plans for proposed changes, including verified assumptions, visual summaries, evidence, test cases, out-of-scope items and merge risks. Invoke it with `/oskar-tools:plan-change`. It writes the plan as a Markdown artifact in the session's `files/` folder and replies with the path and a short summary. Unlike the `plan` command, it does not prescribe a task breakdown.
 
 ## Engineering workflow commands
 

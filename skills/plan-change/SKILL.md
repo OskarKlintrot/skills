@@ -24,6 +24,16 @@ Write so a tired engineer understands on the first read.
 
 Use the user's domain language from `GLOSSARY.md` if it exists in the workspace. If it does not exist or a term is not defined there, use the terms the user has used in the conversation and do not invent new names.
 
+## Output
+
+Write the plan as a Markdown file, not as chat text.
+
+- Save it in the session's artifacts folder (the session's `files/` folder), not in the repository, unless the user asks for another location.
+- Name it `plan-<short-kebab-topic>.md`. If the file exists, update it when it is the same plan; otherwise pick a new name.
+- If an editor canvas is available, open the file in it.
+- In chat, reply with the absolute path and at most three lines on the key decisions. Do not repeat the plan.
+- If no artifacts folder or file tool exists (for example, when the caller expects the plan as a return value), return the full plan as text instead.
+
 ## Template
 
 Use this template for writing the plan:
