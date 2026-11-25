@@ -60,7 +60,6 @@ Call `run_dynamic_workflow` with `name` set to `battle-plan` and these `args`:
   "question": "<user request>",
   "iterations": <number>,
   "models": {
-    "question": "<newest Claude Sonnet>",
     "plan": ["<newest GPT Luna>", "<newest MAI Code Flash>", "<newest Claude Haiku>"],
     "judge": "<newest GPT Sol>"
   }

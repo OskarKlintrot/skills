@@ -79,7 +79,6 @@ export const battlePlan = {
                 models: {
                     type: "object",
                     properties: {
-                        question: { type: "string" },
                         plan: { type: "array", items: { type: "string" } },
                         judge: { type: "string" },
                     },
