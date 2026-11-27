@@ -7,6 +7,13 @@
 - Battle plan compares investigation findings when choosing a base plan and
   combines selected additions from the other plans.
 
+## [0.14.0] - 2026-11-27
+
+### Changed
+
+- Plan-change describes each planned test by name, behavior, and pseudocode,
+  grouped by test level with examples for parameterized cases.
+
 ## [0.13.2] - 2026-11-25
 
 ### Fixed

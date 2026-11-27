@@ -47,7 +47,7 @@ Producing or saving a plan does not approve its implementation.
 
 Use this template for writing the plan:
 
-```markdown
+````markdown
 ## Summary
 
 <diagram, diff-sketch, or tree>
@@ -59,10 +59,32 @@ Use this template for writing the plan:
 
 ## Test Cases
 
-1. <name first test>
-  - <description of the first test case>
-2. <name second test>
-  - <description of the second test case>
+### <Unit | Integration | E2E | ...> — `<test project or file>`
+
+#### `<exact test name>`
+
+**Tests:** <one sentence: the behavior and the expected outcome>
+
+```text
+given <setup>
+when <action>
+then <expected outcome>
+```
+
+#### `<exact test name>` (parameterized)
+
+**Tests:** <one sentence: the rule all cases share>
+
+```text
+given <setup using input>
+when <action>
+then <result equals expected>
+```
+
+| input | expected |
+| ----- | -------- |
+| <a>   | <x>      |
+| <b>   | <y>      |
 
 ## Out-of-Scope
 
@@ -79,7 +101,7 @@ Use this template for writing the plan:
 **Blast Radius:** <one-word description>
 
 <optional: potential ramifications of merge>
-```
+````
 
 ## Sections
 
@@ -210,7 +232,53 @@ Concrete evidence that the change will work. Show a before and after.
 
 ### Test Cases
 
-Describe tests that will verify the expected behavior of the change.
+This section covers automated tests, not manual testing. Exclude if the project doesn't use automated tests.
+
+Group tests by level (unit, integration, E2E, or whatever levels the project uses). Name each group after the level and the test project or file the tests go in. Find the levels by looking at the existing test projects; don't add a level the project doesn't have.
+
+Pick the lowest level that proves the behavior. Use a higher level only for what the lower one can't cover, such as real I/O, wiring between components, or a user flow. Don't test the same behavior at several levels.
+
+Each test case has three parts:
+
+- **Name:** the exact name used in the test suite, following the project's naming convention.
+- **Tests:** one sentence on the behavior covered and the expected outcome. Describe behavior, not implementation.
+- **Pseudocode:** setup, action, and expected outcome as `given` / `when` / `then`. Use the project's style (e.g. Arrange/Act/Assert) if it has one. Keep it short; no real syntax needed.
+
+Prefer parameterized tests (e.g. xUnit `[Theory]`, NUnit `[TestCase]`, Jest `test.each`, pytest `parametrize`) when several cases share the same setup, action, and assertion and differ only in input and expected output. Mark the name with `(parameterized)`, write the pseudocode once in terms of the parameters, and list every case in a table below it with one column per parameter. Include boundary and edge values as rows. Split into separate tests when cases need different setup or assertions.
+
+Examples:
+
+````markdown
+### Unit — `tests/Documents.Tests`
+
+#### `Save_WhenContentUnchanged_ReturnsCachedResult`
+
+**Tests:** Saving unchanged content returns the cached result without writing.
+
+```text
+given a document saved with content "a"
+when save is called again with content "a"
+then the cached result is returned
+and nothing is written to storage
+```
+
+#### `Slugify_ReturnsExpectedSlug` (parameterized)
+
+**Tests:** Titles become lowercase, hyphen-separated slugs without special characters.
+
+```text
+given title
+when slugify(title) is called
+then the result equals expected
+```
+
+| title           | expected        |
+| --------------- | --------------- |
+| `"Hello World"` | `"hello-world"` |
+| `"  trim me  "` | `"trim-me"`     |
+| `"Å, ä & ö!"`   | `"a-a-o"`       |
+| `""`            | `""`            |
+````
 
 ### Out-of-Scope
 
